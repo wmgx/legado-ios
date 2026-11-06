@@ -161,14 +161,14 @@ final class ReaderScrollGeometryTests: XCTestCase {
     func testPagedTextMovesWholeLinesAcrossScreenBoundaries() {
         let reader = configuration(pageAnimation: 0)
         let coordinator = reader.makeCoordinator()
-        let container = NSTextContainer(size: CGSize(width: 240, height: .greatestFiniteMagnitude))
+        let container = NSTextContainer(size: CGSize(width: 240, height: CGFloat.greatestFiniteMagnitude))
         let manager = NSLayoutManager()
         let storage = NSTextStorage(string: String(repeating: "上下边距测试正文，翻页不能截断文字。\n", count: 80),
                                    attributes: ReaderTypography(configuration: reader).bodyAttributes)
         storage.addLayoutManager(manager)
         manager.addTextContainer(container)
         let view = UITextView(frame: CGRect(x: 0, y: 0, width: 240, height: 317), textContainer: container)
-        view.textContainerInset = .zero
+        view.textContainerInset = UIEdgeInsets.zero
         coordinator.installDisplayLink(for: view)
         defer { coordinator.invalidate() }
         manager.delegate = coordinator

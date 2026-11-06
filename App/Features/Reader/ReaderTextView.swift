@@ -97,8 +97,15 @@ struct ReaderTextView: UIViewRepresentable {
             view = ReaderLayoutTextView(frame: .zero)
         }
         view.onLayout = { [weak coordinator = context.coordinator] view in
-            coordinator?.reportPage(in: view)
-            coordinator?.reportPageRanges(in: view)
+            guard let coordinator else { return }
+            let previousSize = coordinator.lastViewportSize
+            coordinator.lastViewportSize = view.bounds.size
+            if previousSize != .zero, previousSize != view.bounds.size {
+                coordinator.scroll(to: coordinator.parent.readerPosition, in: view)
+            } else {
+                coordinator.reportPage(in: view)
+                coordinator.reportPageRanges(in: view)
+            }
         }
         view.accessibilityIdentifier = "reader.text"
         let effectivePageAnimation = isEInkMode ? 4 : pageAnimation
@@ -481,6 +488,8 @@ struct ReaderTextView: UIViewRepresentable {
                     limits.maximum
                 )
                 view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
+                self.reportPage(in: view)
+                self.reportPageRanges(in: view)
             }
         }
 
