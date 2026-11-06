@@ -23,7 +23,7 @@ struct ReaderView: View {
     @State private var illustrationChapter: BookChapter?
     @State private var showsAutoReadControls = false
     @State private var showsStyleControls = false
-    @State private var activeSlider: ReaderSliderPreview?
+    @State private var activeSlider: ReadingSliderPreview?
     @State private var styleSection = 0
     @State private var isAutoReading = false
     @State private var showsReaderMenu = false
@@ -295,28 +295,14 @@ struct ReaderView: View {
         .sheet(item: $illustrationChapter) { chapter in
             EPUBIllustrationsView(book: book, chapter: chapter)
         }
-        .sheet(isPresented: $showsAutoReadControls) { autoReadControls }
         .overlay {
-            if showsStyleControls {
-                GeometryReader { geometry in
-                    ZStack(alignment: .bottom) {
-                        Color.black.opacity(activeSlider == nil ? 0.18 : 0)
-                            .contentShape(Rectangle())
-                            .onTapGesture { showsStyleControls = false }
-                        styleControls
-                            .frame(height: max(geometry.size.height * 0.55, 280))
-                            .clipShape(RoundedRectangle(cornerRadius: 20))
-                            .opacity(activeSlider == nil ? 1 : 0.001)
-                    }
-                    .overlayPreferenceValue(ReaderSliderAnchorKey.self) { anchors in
-                        if let activeSlider, let anchor = anchors[activeSlider.id] {
-                            let rect = geometry[anchor]
-                            readerPreviewSlider(activeSlider)
-                                .frame(width: rect.width, height: rect.height)
-                                .position(x: rect.midX, y: rect.midY)
-                                .allowsHitTesting(false)
-                        }
-                    }
+            if showsStyleControls || showsAutoReadControls {
+                ReadingPreviewPanel(activeSlider: $activeSlider, dismiss: {
+                    showsStyleControls = false
+                    showsAutoReadControls = false
+                }) {
+                    if showsStyleControls { styleControls }
+                    else { autoReadControls }
                 }
             }
         }
@@ -335,6 +321,10 @@ struct ReaderView: View {
             }
         }
         .onChange(of: showsStyleControls) { shown in
+            if shown { showsReaderMenu = false }
+            else { activeSlider = nil }
+        }
+        .onChange(of: showsAutoReadControls) { shown in
             if shown { showsReaderMenu = false }
             else { activeSlider = nil }
         }
@@ -1159,19 +1149,10 @@ struct ReaderView: View {
         ReadingNavigationStack {
             Form {
                 Section {
-                    HStack {
-                        Text("自动翻页速度")
-                        Spacer()
-                        Text("\(autoReadSpeed)s").monospacedDigit().foregroundStyle(.secondary)
-                    }
-                    Slider(
-                        value: Binding(
-                            get: { Double(autoReadSpeed) },
-                            set: { autoReadSpeed = max(1, min(Int($0.rounded()), 120)) }
-                        ),
-                        in: 1...120,
-                        step: 1
-                    )
+                    valueSlider("自动翻页速度", value: Binding(
+                        get: { Double(autoReadSpeed) },
+                        set: { autoReadSpeed = max(1, min(Int($0.rounded()), 120)) }
+                    ), range: 1...120, format: { "\(Int($0))s" })
                 } footer: {
                     Text("数值表示自动阅读一屏所用的秒数，范围 1–120 秒。")
                 }
@@ -1504,76 +1485,29 @@ struct ReaderView: View {
         marginID: String? = nil,
         format: @escaping (Double) -> String
     ) -> some View {
-        readerSliderRow(title, label: marginID ?? title, value: value, range: range, step: step, format: format) { editing in
-            let id = marginID ?? title
-            if editing {
-                activeSlider = ReaderSliderPreview(id: id, title: title, value: value, range: range, step: step, format: format)
-            } else if activeSlider?.id == id {
-                activeSlider = nil
-            }
-        }
-        .anchorPreference(key: ReaderSliderAnchorKey.self, value: .bounds) { anchor in
-            [marginID ?? title: anchor]
-        }
-    }
-
-    private func readerSliderRow(
-        _ title: String, label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double,
-        format: @escaping (Double) -> String, onEditingChanged: @escaping (Bool) -> Void
-    ) -> some View {
-        HStack(spacing: 12) {
-            Text(title)
-                .font(.subheadline)
-                .frame(minWidth: 42, alignment: .leading)
-            Slider(value: value, in: range, step: step, onEditingChanged: onEditingChanged)
-                .accessibilityLabel(label)
-                .accessibilityValue(format(value.wrappedValue))
-            Text(format(value.wrappedValue))
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .fixedSize()
-                .frame(minWidth: 40, alignment: .trailing)
-        }
-        .frame(minHeight: 44)
-    }
-
-    private struct ReaderSliderPreview {
-        let id: String
-        let title: String
-        let value: Binding<Double>
-        let range: ClosedRange<Double>
-        let step: Double
-        let format: (Double) -> String
-    }
-
-    private func readerPreviewSlider(_ preview: ReaderSliderPreview) -> some View {
-        readerSliderRow(preview.title, label: preview.id, value: preview.value, range: preview.range,
-                        step: preview.step, format: preview.format, onEditingChanged: { _ in })
-            .background {
-                RoundedRectangle(cornerRadius: 12).fill(.regularMaterial).padding(-10)
-            }
-            .accessibilityHidden(true)
+        ReadingPreviewSlider(title: title, id: marginID ?? title, value: value, range: range,
+                             step: step, format: format, activeSlider: $activeSlider)
     }
 
     @ViewBuilder private func marginGuides(group: String, top: Double, bottom: Double, left: Double, right: Double) -> some View {
         if let activeSlider, activeSlider.id.hasPrefix(group) {
             GeometryReader { geometry in
                 ZStack {
-                    marginBand("上", value: top, color: .orange)
+                    marginBand(isActive: activeSlider.id == "\(group)上边距")
                         .frame(width: geometry.size.width, height: min(CGFloat(top), geometry.size.height))
                         .frame(maxHeight: .infinity, alignment: .top)
-                    marginBand("下", value: bottom, color: .blue)
+                    marginBand(isActive: activeSlider.id == "\(group)下边距")
                         .frame(width: geometry.size.width, height: min(CGFloat(bottom), geometry.size.height))
                         .frame(maxHeight: .infinity, alignment: .bottom)
-                    marginBand("左", value: left, color: .green)
+                    marginBand(isActive: activeSlider.id == "\(group)左边距")
                         .frame(width: min(CGFloat(left), geometry.size.width), height: geometry.size.height)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    marginBand("右", value: right, color: .purple)
+                    marginBand(isActive: activeSlider.id == "\(group)右边距")
                         .frame(width: min(CGFloat(right), geometry.size.width), height: geometry.size.height)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .overlay(alignment: .top) {
-                    Text("\(group) · \(activeSlider.id) \(Int(activeSlider.value.wrappedValue)) pt")
+                    Text("\(activeSlider.id) \(Int(activeSlider.value.wrappedValue)) pt")
                         .font(.caption.weight(.semibold))
                         .padding(6)
                         .background(.regularMaterial, in: Capsule())
@@ -1584,9 +1518,13 @@ struct ReaderView: View {
         }
     }
 
-    private func marginBand(_ title: String, value: Double, color: Color) -> some View {
-        color.opacity(0.25)
-            .overlay { color.opacity(0.7).frame(height: 1) }
+    private func marginBand(isActive: Bool) -> some View {
+        // One muted hue for every edge; only the current edge is emphasized.
+        let tint = Color(red: 0.43, green: 0.51, blue: 0.57)
+        return tint.opacity(isActive ? 0.22 : 0.09)
+            .overlay {
+                Rectangle().strokeBorder(tint.opacity(isActive ? 0.6 : 0.24), lineWidth: 1)
+            }
     }
 
     private static let readerTipChoices: [(Int, String)] = [
@@ -2385,10 +2323,3 @@ private struct ReaderFailureTestLoader: ChapterContentLoading {
     }
 }
 #endif
-
-private struct ReaderSliderAnchorKey: PreferenceKey {
-    static var defaultValue: [String: Anchor<CGRect>] { [:] }
-    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}

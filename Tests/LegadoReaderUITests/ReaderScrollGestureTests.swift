@@ -185,6 +185,15 @@ final class ReaderScrollGestureTests: XCTestCase {
         scrollToAppearanceElement(app.sliders["页眉上边距"], in: app)
         app.sliders["页眉上边距"].adjust(toNormalizedSliderPosition: 0.2)
         XCTAssertTrue(app.segmentedControls.buttons["文字"].isHittable)
+        app.buttons["完成"].tap()
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["更多"].tap()
+        app.buttons["自动阅读"].tap()
+        let speed = app.sliders["自动翻页速度"]
+        XCTAssertTrue(speed.waitForExistence(timeout: 5))
+        speed.adjust(toNormalizedSliderPosition: 0.6)
+        XCTAssertTrue(app.navigationBars["自动阅读"].exists)
+        XCTAssertTrue(app.buttons["继续阅读"].isHittable)
     }
 
     func testDirectoryOpensAtCurrentChapterAndCanLocateItAfterFilteringAndReordering() {
