@@ -234,6 +234,7 @@ struct ReaderView: View {
                 return
             }
             activity.beginReading(book)
+            model.resumePreloading()
             speech.onNextChapter = { moveSpeechToChapter(direction: 1) }
             speech.onPreviousChapter = { moveSpeechToChapter(direction: -1) }
             speech.onRemoteStop = {
@@ -265,6 +266,7 @@ struct ReaderView: View {
         }
         .onDisappear {
             guard !isStylePreview else { return }
+            model.cancelPreloading()
             isAutoReading = false
             UIApplication.shared.isIdleTimerDisabled = false
             if speech.isSpeaking || speech.isPaused { speech.toggle(text: "") }
@@ -370,7 +372,7 @@ struct ReaderView: View {
             readerJumpPosition = nil
             readerPageRanges = []
             if needsInitialPosition { readerPosition = model.requestedPosition }
-            await model.load(rules: model.usesReplaceRules ? replaceRules.rules : [], prefetchNextChapter: pageAnimation != 3)
+            await model.load(rules: model.usesReplaceRules ? replaceRules.rules : [])
             guard !Task.isCancelled else { return }
             if needsInitialPosition {
                 readerPosition = pageAnimation == 3
@@ -1803,7 +1805,7 @@ struct ReaderView: View {
     private func refreshCurrentChapter() {
         stopSpeechIfNeeded()
         Task {
-            await model.load(rules: replaceRules.rules, forceRefresh: true, prefetchNextChapter: pageAnimation != 3)
+            await model.load(rules: replaceRules.rules, forceRefresh: true)
             readerPosition = min(readerPosition, model.content.utf16.count)
         }
     }
@@ -1811,7 +1813,7 @@ struct ReaderView: View {
     private func refreshEditorFromSource() {
         contentEditError = nil
         Task {
-            await model.load(rules: replaceRules.rules, forceRefresh: true, prefetchNextChapter: pageAnimation != 3)
+            await model.load(rules: replaceRules.rules, forceRefresh: true)
             editedContent = model.content
             if let error = model.diagnostics.first(where: { $0.severity == .error }) {
                 contentEditError = error.message
