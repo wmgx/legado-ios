@@ -2,12 +2,16 @@ name: iOS test build
 
 on:
   push:
-    branches: [main, work, 'fix/**']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:

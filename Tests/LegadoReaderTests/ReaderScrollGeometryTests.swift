@@ -174,10 +174,13 @@ final class ReaderScrollGeometryTests: XCTestCase {
         manager.delegate = coordinator
         manager.ensureLayout(for: container)
         var lineCount = 0
+        var previousBottom: CGFloat = 0
         manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { rect, used, _, _, _ in
             let boundary = (floor(rect.minY / view.bounds.height) + 1) * view.bounds.height
             XCTAssertLessThanOrEqual(rect.maxY, boundary + 0.01)
             XCTAssertLessThanOrEqual(used.maxY, boundary + 0.01)
+            XCTAssertGreaterThanOrEqual(rect.minY, previousBottom - 0.01)
+            previousBottom = rect.maxY
             lineCount += 1
         }
         XCTAssertGreaterThan(lineCount, 80)
