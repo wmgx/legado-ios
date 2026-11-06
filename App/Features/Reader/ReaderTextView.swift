@@ -100,6 +100,10 @@ struct ReaderTextView: UIViewRepresentable {
             guard let coordinator else { return }
             let previousSize = coordinator.lastViewportSize
             coordinator.lastViewportSize = view.bounds.size
+            if coordinator.hasPendingScroll {
+                coordinator.applyPendingScroll(in: view)
+                return
+            }
             if previousSize != .zero, previousSize != view.bounds.size {
                 coordinator.scroll(to: coordinator.parent.readerPosition, in: view)
             } else {
@@ -234,7 +238,7 @@ struct ReaderTextView: UIViewRepresentable {
                 coordinator?.reportPage(in: view)
                 coordinator?.reportPageRanges(in: view)
             }
-        } else if viewportSizeChanged {
+        } else if viewportSizeChanged, !context.coordinator.hasPendingScroll {
             context.coordinator.scroll(to: readerPosition, in: view)
             let generation = context.coordinator.layoutGeneration
             DispatchQueue.main.async { [weak coordinator = context.coordinator] in
@@ -302,6 +306,9 @@ struct ReaderTextView: UIViewRepresentable {
         var continuationBodyStart: Int?
         var lastJumpPosition: Int?
         private(set) var layoutGeneration = 0
+        private var pendingScrollPosition: Int?
+        private var isApplyingScroll = false
+        var hasPendingScroll: Bool { pendingScrollPosition != nil }
         var lastViewportSize = CGSize.zero
         private var isAutoReading = false
         private var isAutoReadPaused = false
@@ -425,6 +432,7 @@ struct ReaderTextView: UIViewRepresentable {
 
         func invalidate() {
             layoutGeneration &+= 1
+            pendingScrollPosition = nil
             resetAutoPage()
             displayLink?.invalidate()
             displayLink = nil
@@ -462,17 +470,36 @@ struct ReaderTextView: UIViewRepresentable {
             guard !view.text.isEmpty else { return }
             layoutGeneration &+= 1
             let generation = layoutGeneration
-            let prefix = characterPosition == 0 && parent.pageAnimation == 3
-                ? currentSectionStart
-                : renderedPrefixLength
-            let location = ReaderPositionResolver.renderedLocation(
-                position: characterPosition,
-                prefixLength: prefix,
-                renderedLength: view.text.utf16.count
-            )
+            pendingScrollPosition = characterPosition
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.layoutGeneration == generation else { return }
-                view.layoutManager.ensureLayout(for: view.textContainer)
+                self.applyPendingScroll(in: view)
+            }
+        }
+
+        @discardableResult
+        func applyPendingScroll(in view: UITextView) -> Bool {
+            guard !isApplyingScroll, let characterPosition = pendingScrollPosition,
+                  view.bounds.width > 0, view.bounds.height > 0, !view.text.isEmpty else { return false }
+            isApplyingScroll = true
+            defer { isApplyingScroll = false }
+            view.layoutManager.ensureLayout(for: view.textContainer)
+            view.layoutIfNeeded()
+            let limits = scrollLimits(for: view)
+            let target: CGFloat
+            if characterPosition == Int.max {
+                // An end-of-chapter jump is a viewport destination, not the
+                // bounding rect of a possibly invisible trailing newline.
+                target = limits.maximum
+            } else {
+                let prefix = characterPosition == 0 && parent.pageAnimation == 3
+                    ? currentSectionStart
+                    : renderedPrefixLength
+                let location = ReaderPositionResolver.renderedLocation(
+                    position: characterPosition,
+                    prefixLength: prefix,
+                    renderedLength: view.text.utf16.count
+                )
                 let glyph = view.layoutManager.glyphIndexForCharacter(at: location)
                 var point = view.layoutManager.boundingRect(
                     forGlyphRange: NSRange(location: glyph, length: 1),
@@ -482,15 +509,16 @@ struct ReaderTextView: UIViewRepresentable {
                     point.y = floor(point.y / max(view.bounds.height, 1)) * view.bounds.height
                 }
                 point.y += view.textContainerInset.top
-                let limits = self.scrollLimits(for: view)
-                let target = min(
+                target = min(
                     max(point.y - view.adjustedContentInset.top, limits.minimum),
                     limits.maximum
                 )
-                view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
-                self.reportPage(in: view)
-                self.reportPageRanges(in: view)
             }
+            view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
+            pendingScrollPosition = nil
+            reportPage(in: view)
+            reportPageRanges(in: view)
+            return true
         }
 
         private func readingViewportHeight(for view: UITextView) -> CGFloat {

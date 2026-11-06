@@ -158,6 +158,41 @@ final class ReaderBookmarkPersistenceTests: XCTestCase {
 
 @MainActor
 final class ReaderScrollGeometryTests: XCTestCase {
+    func testChapterEndJumpWaitsForViewportAndHandlesTrailingNewlines() async {
+        let coordinator = configuration(pageAnimation: 0).makeCoordinator()
+        let container = NSTextContainer(size: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
+        let manager = NSLayoutManager()
+        let storage = NSTextStorage(string: String(repeating: "上一章的正文，返回时应从最后一屏继续阅读。\n", count: 80) + "\n\n",
+                                   attributes: [.font: UIFont.systemFont(ofSize: 20)])
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        let view = UITextView(frame: .zero, textContainer: container)
+        view.contentInsetAdjustmentBehavior = .never
+        view.textContainerInset = UIEdgeInsets.zero
+        coordinator.installDisplayLink(for: view)
+        defer { coordinator.invalidate() }
+
+        coordinator.scroll(to: Int.max, in: view)
+        let scheduled = expectation(description: "Initial scroll attempted before viewport exists")
+        DispatchQueue.main.async { scheduled.fulfill() }
+        await fulfillment(of: [scheduled], timeout: 2)
+        XCTAssertTrue(coordinator.hasPendingScroll)
+
+        view.frame = CGRect(x: 0, y: 0, width: 280, height: 317)
+        view.layoutIfNeeded()
+        XCTAssertTrue(coordinator.applyPendingScroll(in: view))
+        let lastOffset = view.contentSize.height - view.bounds.height
+        XCTAssertGreaterThan(lastOffset, 0)
+        XCTAssertEqual(view.contentOffset.y, lastOffset, accuracy: 0.5)
+        XCTAssertFalse(coordinator.hasPendingScroll)
+
+        coordinator.scroll(to: 0, in: view)
+        let returned = expectation(description: "Normal chapter-start navigation still works")
+        DispatchQueue.main.async { returned.fulfill() }
+        await fulfillment(of: [returned], timeout: 2)
+        XCTAssertEqual(view.contentOffset.y, 0, accuracy: 0.5)
+    }
+
     func testPagedTextMovesWholeLinesAcrossScreenBoundaries() {
         let reader = configuration(pageAnimation: 0)
         let coordinator = reader.makeCoordinator()

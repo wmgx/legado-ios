@@ -692,6 +692,7 @@ struct ReaderView: View {
                 saveProgress(immediate: true)
                 readerJumpPosition = nil
                 model.goPrevious(position: Int.max)
+                readerPosition = model.requestedPosition
             },
             onEnteredPrevious: { position in
                 guard pageAnimation == 3, model.canGoPrevious, model.hasPreviousWindow else { return }

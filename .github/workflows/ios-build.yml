@@ -91,6 +91,7 @@ jobs:
             -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 120 \
             -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testStyleTabsKeepCommonSlidersAccessibleAndRestoreAfterPreview \
             -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testDirectoryOpensAtCurrentChapterAndCanLocateItAfterFilteringAndReordering \
+            -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testBackwardPageAcrossChapterBoundaryOpensPreviousLastPage \
             test 2>&1 | tee ui-test.log
       - name: Upload test results
         if: always()

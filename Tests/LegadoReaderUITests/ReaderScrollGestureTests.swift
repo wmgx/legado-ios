@@ -310,6 +310,36 @@ final class ReaderScrollGestureTests: XCTestCase {
         attachScreenshot(app)
     }
 
+    func testBackwardPageAcrossChapterBoundaryOpensPreviousLastPage() {
+        continueAfterFailure = false
+        for mode in ["0", "4"] {
+            let app = XCUIApplication()
+            app.launchArguments = ["-uiDemo", "-uiDemoReader", "-uiScrollRegression", "-uiPagingDiagnostics",
+                                   "-pageAnim", mode, "-themeMode", "1", "-tipFooterRight", "6",
+                                   "-footerMode", "0", "-titleMode", "0", "-textSize", "28", "-textFont", ""]
+            app.launch()
+            let body = app.textViews["reader.text"]
+            XCTAssertTrue(body.waitForExistence(timeout: 20))
+            let page = app.staticTexts.matching(NSPredicate(format: "label MATCHES %@", "[0-9]+/[0-9]+.*")).firstMatch
+            func expectChapter(_ title: String, atEnd: Bool) {
+                let ready = expectation(for: NSPredicate { _, _ in
+                    guard body.exists, page.exists, (body.value as? String ?? "").contains(title) else { return false }
+                    let parts = page.label.split(separator: "/")
+                    guard parts.count == 2, let current = Int(parts[0]),
+                          let total = parts[1].split(separator: " ").first.flatMap({ Int($0) }), total > 1 else { return false }
+                    return atEnd ? current == total : current == 1
+                }, evaluatedWith: nil)
+                wait(for: [ready], timeout: 10)
+            }
+            expectChapter("第21章 · 连续阅读", atEnd: false)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)).tap()
+            expectChapter("第20章 · 连续阅读", atEnd: true)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)).tap()
+            expectChapter("第21章 · 连续阅读", atEnd: false)
+            app.terminate()
+        }
+    }
+
     func testPagedReadingChapterNavigationDirectorySearchAndSettings() throws {
         try exerciseChapterNavigationAndSettings(usesLegacyUI: false)
     }
