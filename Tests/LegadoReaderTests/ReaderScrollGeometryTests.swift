@@ -158,6 +158,32 @@ final class ReaderBookmarkPersistenceTests: XCTestCase {
 
 @MainActor
 final class ReaderScrollGeometryTests: XCTestCase {
+    func testPagedTextMovesWholeLinesAcrossScreenBoundaries() {
+        let reader = configuration(pageAnimation: 0)
+        let coordinator = reader.makeCoordinator()
+        let container = NSTextContainer(size: CGSize(width: 240, height: .greatestFiniteMagnitude))
+        let manager = NSLayoutManager()
+        let storage = NSTextStorage(string: String(repeating: "上下边距测试正文，翻页不能截断文字。\n", count: 80),
+                                   attributes: ReaderTypography(configuration: reader).bodyAttributes)
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        let view = UITextView(frame: CGRect(x: 0, y: 0, width: 240, height: 317), textContainer: container)
+        view.textContainerInset = .zero
+        coordinator.installDisplayLink(for: view)
+        defer { coordinator.invalidate() }
+        manager.delegate = coordinator
+        manager.ensureLayout(for: container)
+        var lineCount = 0
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { rect, used, _, _, _ in
+            let boundary = (floor(rect.minY / view.bounds.height) + 1) * view.bounds.height
+            XCTAssertLessThanOrEqual(rect.maxY, boundary + 0.01)
+            XCTAssertLessThanOrEqual(used.maxY, boundary + 0.01)
+            lineCount += 1
+        }
+        XCTAssertGreaterThan(lineCount, 80)
+        XCTAssertGreaterThan(manager.usedRect(for: container).height, view.bounds.height * 2)
+    }
+
     func testPrependingAndRecyclingStayWithinOnePhysicalPixel() async throws {
         let chapters = (4...6).map { chapter($0) }
         let fixture = host(chapters: chapters, active: 5)
@@ -320,14 +346,14 @@ final class ReaderScrollGeometryTests: XCTestCase {
               onRetainChapters: { _ in })
     }
 
-    private func configuration(fontSize: Double = 20) -> ReaderTextView {
+    private func configuration(fontSize: Double = 20, pageAnimation: Int = 3) -> ReaderTextView {
         .init(text: "", title: "", previousTitle: nil, previousText: "", isPreviousReady: false,
               continuationTitle: nil, continuationText: "", isContinuationReady: false, isVolume: false,
               fontSize: fontSize, fontPath: "", letterSpacing: 0, lineSpacing: 8, paragraphSpacing: 12,
               paragraphIndent: "　　", paddingLeft: 20, paddingRight: 20, paddingTop: 16, paddingBottom: 16,
               headerInset: 0, footerInset: 0, fontWeight: 0, titleMode: 0, titleSize: 4,
               titleTopSpacing: 16, titleBottomSpacing: 24, underlineMode: 0, isSelectable: false,
-              fullJustify: true, pageAnimation: 3, isEInkMode: false, clickActions: Array(repeating: 0, count: 9),
+              fullJustify: true, pageAnimation: pageAnimation, isEInkMode: false, clickActions: Array(repeating: 0, count: 9),
               backgroundColor: .white, foregroundColor: .black, requestedPosition: 0, jumpPosition: nil,
               renderRevision: 0, readerPosition: .constant(0), pageRanges: .constant([]),
               currentPage: .constant(1), totalPages: .constant(1), isAutoReading: false,

@@ -1,0 +1,55 @@
+name: iOS test build
+
+on:
+  push:
+    branches: [main, work, 'fix/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show Xcode version
+        run: xcodebuild -version
+      - name: Run reader regression tests
+        run: |
+          set -o pipefail
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
+          xcodebuild -project Legado.xcodeproj -scheme LegadoReaderTests \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath build-tests CODE_SIGNING_ALLOWED=NO \
+            test 2>&1 | tee test.log
+      - name: Build unsigned iPhone app
+        run: |
+          set -o pipefail
+          xcodebuild -project Legado.xcodeproj -scheme Legado \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build.log
+      - name: Package IPA for local signing
+        run: |
+          mkdir -p build/package/Payload
+          cp -R build/Build/Products/Release-iphoneos/Legado.app build/package/Payload/
+          cd build/package
+          zip -qry ../Legado-unsigned.ipa Payload
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Legado-unsigned-${{ github.sha }}
+          path: build/Legado-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: |
+            build.log
+            test.log

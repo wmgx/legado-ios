@@ -464,6 +464,9 @@ struct ReaderView: View {
             VStack(spacing: 0) {
                 if headerVisible { readerTipBar(isHeader: true) }
                 readerSurface
+                    .clipped()
+                    .padding(.top, CGFloat(max(paddingTop, 0)))
+                    .padding(.bottom, CGFloat(max(paddingBottom, 0)))
                 if footerVisible { readerTipBar(isHeader: false) }
             }
             .frame(maxWidth: readingColumnMaxWidth)
@@ -566,8 +569,8 @@ struct ReaderView: View {
             paragraphIndent: paragraphIndent,
             paddingLeft: paddingLeft,
             paddingRight: paddingRight,
-            paddingTop: paddingTop,
-            paddingBottom: paddingBottom,
+            paddingTop: 0,
+            paddingBottom: 0,
             headerInset: 0,
             footerInset: 0,
             fontWeight: fontWeight,

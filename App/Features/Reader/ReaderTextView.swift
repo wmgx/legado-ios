@@ -2,12 +2,26 @@ import SwiftUI
 import UIKit
 
 private final class ReaderLayoutTextView: UITextView {
+    var paginates = false
     var onLayout: ((UITextView) -> Void)?
     private var reportedSize = CGSize.zero
     private var reportedContentSize = CGSize.zero
 
     override func layoutSubviews() {
+        if paginates, bounds.size != reportedSize {
+            layoutManager.invalidateLayout(
+                forCharacterRange: NSRange(location: 0, length: textStorage.length),
+                actualCharacterRange: nil
+            )
+        }
         super.layoutSubviews()
+        if paginates, bounds.height > 0 {
+            layoutManager.ensureLayout(for: textContainer)
+            let height = layoutManager.usedRect(for: textContainer).maxY
+            let pages = max(ceil(height / bounds.height), 1)
+            let size = CGSize(width: contentSize.width, height: pages * bounds.height)
+            if contentSize != size { contentSize = size }
+        }
         guard bounds.width > 0, bounds.height > 0,
               bounds.size != reportedSize || contentSize != reportedContentSize else { return }
         reportedSize = bounds.size
@@ -91,6 +105,8 @@ struct ReaderTextView: UIViewRepresentable {
         view.backgroundColor = backgroundColor
         view.isOpaque = backgroundColor != .clear
         view.delegate = context.coordinator
+        view.layoutManager.delegate = context.coordinator
+        view.contentInsetAdjustmentBehavior = .never
         view.isEditable = false
         view.isSelectable = false
         view.alwaysBounceVertical = effectivePageAnimation == 3
@@ -114,6 +130,15 @@ struct ReaderTextView: UIViewRepresentable {
             context.coordinator.lastViewportSize = view.bounds.size
         }
         let effectivePageAnimation = isEInkMode ? 4 : pageAnimation
+        if let layoutView = view as? ReaderLayoutTextView {
+            layoutView.paginates = effectivePageAnimation != 3
+        }
+        if viewportSizeChanged {
+            view.layoutManager.invalidateLayout(
+                forCharacterRange: NSRange(location: 0, length: view.textStorage.length),
+                actualCharacterRange: nil
+            )
+        }
         view.isSelectable = false
         view.alwaysBounceVertical = effectivePageAnimation == 3
         view.isScrollEnabled = true
@@ -235,7 +260,28 @@ struct ReaderTextView: UIViewRepresentable {
         coordinator.invalidate()
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate, NSLayoutManagerDelegate {
+        // Move an overflowing line to the next screen before TextKit places
+        // subsequent lines. Every page then starts and ends on whole lines.
+        func layoutManager(
+            _ layoutManager: NSLayoutManager,
+            shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<CGRect>,
+            lineFragmentUsedRect: UnsafeMutablePointer<CGRect>,
+            baselineOffset: UnsafeMutablePointer<CGFloat>,
+            in textContainer: NSTextContainer,
+            forGlyphRange glyphRange: NSRange
+        ) -> Bool {
+            guard let view = textView, parent.pageAnimation != 3 || parent.isEInkMode,
+                  view.bounds.height > 0 else { return false }
+            let height = view.bounds.height
+            let rect = lineFragmentRect.pointee
+            let boundary = (floor(rect.minY / height) + 1) * height
+            guard rect.height <= height, rect.maxY > boundary + 0.01 else { return false }
+            let shift = boundary - rect.minY
+            lineFragmentRect.pointee.origin.y += shift
+            lineFragmentUsedRect.pointee.origin.y += shift
+            return true
+        }
         var parent: ReaderTextView
         var contentKey = 0
         var primaryContentKey = 0
@@ -425,6 +471,9 @@ struct ReaderTextView: UIViewRepresentable {
                     forGlyphRange: NSRange(location: glyph, length: 1),
                     in: view.textContainer
                 ).origin
+                if self.parent.pageAnimation != 3 || self.parent.isEInkMode {
+                    point.y = floor(point.y / max(view.bounds.height, 1)) * view.bounds.height
+                }
                 point.y += view.textContainerInset.top
                 let limits = self.scrollLimits(for: view)
                 let target = min(
@@ -621,7 +670,7 @@ struct ReaderTextView: UIViewRepresentable {
                     : min(limits.minimum + CGFloat(page) * pageHeight, limits.maximum)
                 let rect = CGRect(
                     x: 0,
-                    y: max(0, offset + view.textContainerInset.top),
+                    y: max(0, offset),
                     width: max(view.textContainer.size.width, 1),
                     height: pageHeight
                 )
