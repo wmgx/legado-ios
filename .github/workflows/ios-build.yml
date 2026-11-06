@@ -61,16 +61,23 @@ jobs:
         uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
+      - name: Boot iPhone simulator
+        id: simulator
+        timeout-minutes: 3
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k in sorted(d["devices"], reverse=True) if "iOS" in k for v in d["devices"][k] if "iPhone" in v["name"]))')
+          echo "id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$DEVICE_ID" || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
       - name: Run reader regression tests
         timeout-minutes: 12
         run: |
           set -o pipefail
-          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k,vs in d["devices"].items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
           xcodebuild -project Legado.xcodeproj -scheme LegadoReaderTests \
-            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
             -derivedDataPath build-tests -resultBundlePath reader-tests.xcresult \
             -test-timeouts-enabled YES -default-test-execution-time-allowance 60 \
-            -maximum-test-execution-time-allowance 120 CODE_SIGNING_ALLOWED=NO \
+            -maximum-test-execution-time-allowance 120 -parallel-testing-enabled NO \
             test 2>&1 | tee test.log
       - name: Upload test results
         if: always()
