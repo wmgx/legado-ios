@@ -22,6 +22,7 @@ struct ReaderView: View {
     @State private var illustrationChapter: BookChapter?
     @State private var showsAutoReadControls = false
     @State private var showsStyleControls = false
+    @State private var activeMargin: String?
     @State private var isAutoReading = false
     @State private var showsReaderMenu = false
     @State private var followsSystemBrightness = true
@@ -272,7 +273,34 @@ struct ReaderView: View {
             EPUBIllustrationsView(book: book, chapter: chapter)
         }
         .sheet(isPresented: $showsAutoReadControls) { autoReadControls }
-        .sheet(isPresented: $showsStyleControls) { styleControls }
+        .overlay {
+            if showsStyleControls {
+                GeometryReader { geometry in
+                    ZStack(alignment: .bottom) {
+                        Color.black.opacity(activeMargin == nil ? 0.18 : 0)
+                            .contentShape(Rectangle())
+                            .onTapGesture { showsStyleControls = false }
+                        styleControls
+                            .frame(height: max(geometry.size.height * 0.55, 280))
+                            .clipShape(RoundedRectangle(cornerRadius: 20))
+                            .opacity(activeMargin == nil ? 1 : 0.001)
+                    }
+                    .overlayPreferenceValue(ReaderMarginAnchorKey.self) { anchors in
+                        if let activeMargin, let anchor = anchors[activeMargin] {
+                            let rect = geometry[anchor]
+                            marginPreviewSlider(activeMargin)
+                                .frame(width: rect.width, height: rect.height)
+                                .position(x: rect.midX, y: rect.midY)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: showsStyleControls) { shown in
+            if shown { showsReaderMenu = false }
+            else { activeMargin = nil }
+        }
         .sheet(isPresented: $showsContentSearch) { contentSearchSheet }
         .sheet(item: $sourceSwitchBook) { currentBook in
             ReadingNavigationStack {
@@ -462,12 +490,19 @@ struct ReaderView: View {
             .background(backgroundColor.ignoresSafeArea())
         } else {
             VStack(spacing: 0) {
-                if headerVisible { readerTipBar(isHeader: true) }
+                if headerVisible {
+                    readerTipBar(isHeader: true)
+                        .overlay { marginGuides(group: "页眉", top: headerPaddingTop, bottom: headerPaddingBottom, left: headerPaddingLeft, right: headerPaddingRight) }
+                }
                 readerSurface
                     .clipped()
                     .padding(.top, CGFloat(max(paddingTop, 0)))
                     .padding(.bottom, CGFloat(max(paddingBottom, 0)))
-                if footerVisible { readerTipBar(isHeader: false) }
+                    .overlay { marginGuides(group: "正文", top: paddingTop, bottom: paddingBottom, left: paddingLeft, right: paddingRight) }
+                if footerVisible {
+                    readerTipBar(isHeader: false)
+                        .overlay { marginGuides(group: "页脚", top: footerPaddingTop, bottom: footerPaddingBottom, left: footerPaddingLeft, right: footerPaddingRight) }
+                }
             }
             .frame(maxWidth: readingColumnMaxWidth)
             .frame(maxWidth: .infinity)
@@ -1335,10 +1370,10 @@ struct ReaderView: View {
                 }
 
                 Section("正文边距") {
-                    valueSlider("左边距", value: $paddingLeft, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("右边距", value: $paddingRight, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("上边距", value: $paddingTop, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("下边距", value: $paddingBottom, range: 0...100, format: { "\(Int($0))" })
+                    valueSlider("左边距", value: $paddingLeft, range: 0...100, marginID: "正文左边距", format: { "\(Int($0))" })
+                    valueSlider("右边距", value: $paddingRight, range: 0...100, marginID: "正文右边距", format: { "\(Int($0))" })
+                    valueSlider("上边距", value: $paddingTop, range: 0...100, marginID: "正文上边距", format: { "\(Int($0))" })
+                    valueSlider("下边距", value: $paddingBottom, range: 0...100, marginID: "正文下边距", format: { "\(Int($0))" })
                 }
 
                 Section("页眉页脚") {
@@ -1362,17 +1397,17 @@ struct ReaderView: View {
                 }
 
                 Section("页眉边距") {
-                    valueSlider("左边距", value: $headerPaddingLeft, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("右边距", value: $headerPaddingRight, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("上边距", value: $headerPaddingTop, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("下边距", value: $headerPaddingBottom, range: 0...100, format: { "\(Int($0))" })
+                    valueSlider("左边距", value: $headerPaddingLeft, range: 0...100, marginID: "页眉左边距", format: { "\(Int($0))" })
+                    valueSlider("右边距", value: $headerPaddingRight, range: 0...100, marginID: "页眉右边距", format: { "\(Int($0))" })
+                    valueSlider("上边距", value: $headerPaddingTop, range: 0...100, marginID: "页眉上边距", format: { "\(Int($0))" })
+                    valueSlider("下边距", value: $headerPaddingBottom, range: 0...100, marginID: "页眉下边距", format: { "\(Int($0))" })
                 }
 
                 Section("页脚边距") {
-                    valueSlider("左边距", value: $footerPaddingLeft, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("右边距", value: $footerPaddingRight, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("上边距", value: $footerPaddingTop, range: 0...100, format: { "\(Int($0))" })
-                    valueSlider("下边距", value: $footerPaddingBottom, range: 0...100, format: { "\(Int($0))" })
+                    valueSlider("左边距", value: $footerPaddingLeft, range: 0...100, marginID: "页脚左边距", format: { "\(Int($0))" })
+                    valueSlider("右边距", value: $footerPaddingRight, range: 0...100, marginID: "页脚右边距", format: { "\(Int($0))" })
+                    valueSlider("上边距", value: $footerPaddingTop, range: 0...100, marginID: "页脚上边距", format: { "\(Int($0))" })
+                    valueSlider("下边距", value: $footerPaddingBottom, range: 0...100, marginID: "页脚下边距", format: { "\(Int($0))" })
                 }
             }
             .navigationTitle("阅读样式")
@@ -1440,6 +1475,7 @@ struct ReaderView: View {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double = 1,
+        marginID: String? = nil,
         format: @escaping (Double) -> String
     ) -> some View {
         VStack(spacing: 6) {
@@ -1448,8 +1484,81 @@ struct ReaderView: View {
                 Spacer()
                 Text(format(value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary)
             }
-            Slider(value: value, in: range, step: step)
+            Slider(value: value, in: range, step: step, onEditingChanged: { editing in
+                guard let marginID else { return }
+                activeMargin = editing ? marginID : nil
+            })
         }
+        .anchorPreference(key: ReaderMarginAnchorKey.self, value: .bounds) { anchor in
+            marginID.map { [$0: anchor] } ?? [:]
+        }
+    }
+
+    private func marginBinding(_ id: String) -> Binding<Double> {
+        switch id {
+        case "正文左边距": $paddingLeft
+        case "正文右边距": $paddingRight
+        case "正文上边距": $paddingTop
+        case "正文下边距": $paddingBottom
+        case "页眉左边距": $headerPaddingLeft
+        case "页眉右边距": $headerPaddingRight
+        case "页眉上边距": $headerPaddingTop
+        case "页眉下边距": $headerPaddingBottom
+        case "页脚左边距": $footerPaddingLeft
+        case "页脚右边距": $footerPaddingRight
+        case "页脚上边距": $footerPaddingTop
+        default: $footerPaddingBottom
+        }
+    }
+
+    private func marginPreviewSlider(_ id: String) -> some View {
+        let value = marginBinding(id)
+        return VStack(spacing: 6) {
+            HStack {
+                Text(id)
+                Spacer()
+                Text("\(Int(value.wrappedValue)) pt").monospacedDigit()
+            }
+            Slider(value: value, in: 0...100, step: 1)
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 12).fill(.regularMaterial).padding(-10)
+        }
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder private func marginGuides(group: String, top: Double, bottom: Double, left: Double, right: Double) -> some View {
+        if let activeMargin, activeMargin.hasPrefix(group) {
+            GeometryReader { geometry in
+                ZStack {
+                    marginBand("上", value: top, color: .orange)
+                        .frame(width: geometry.size.width, height: min(CGFloat(top), geometry.size.height))
+                        .frame(maxHeight: .infinity, alignment: .top)
+                    marginBand("下", value: bottom, color: .blue)
+                        .frame(width: geometry.size.width, height: min(CGFloat(bottom), geometry.size.height))
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                    marginBand("左", value: left, color: .green)
+                        .frame(width: min(CGFloat(left), geometry.size.width), height: geometry.size.height)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    marginBand("右", value: right, color: .purple)
+                        .frame(width: min(CGFloat(right), geometry.size.width), height: geometry.size.height)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .overlay(alignment: .top) {
+                    Text("\(group) · \(activeMargin) \(Int(marginBinding(activeMargin).wrappedValue)) pt")
+                        .font(.caption.weight(.semibold))
+                        .padding(6)
+                        .background(.regularMaterial, in: Capsule())
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private func marginBand(_ title: String, value: Double, color: Color) -> some View {
+        color.opacity(0.25)
+            .overlay { color.opacity(0.7).frame(height: 1) }
     }
 
     private static let readerTipChoices: [(Int, String)] = [
@@ -2222,3 +2331,10 @@ private struct ReaderFailureTestLoader: ChapterContentLoading {
     }
 }
 #endif
+
+private struct ReaderMarginAnchorKey: PreferenceKey {
+    static var defaultValue: [String: Anchor<CGRect>] { [:] }
+    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
