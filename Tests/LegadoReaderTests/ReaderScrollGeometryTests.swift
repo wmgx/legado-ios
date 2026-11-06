@@ -193,34 +193,85 @@ final class ReaderScrollGeometryTests: XCTestCase {
         XCTAssertEqual(view.contentOffset.y, 0, accuracy: 0.5)
     }
 
-    func testPagedTextMovesWholeLinesAcrossScreenBoundaries() {
-        let reader = configuration(pageAnimation: 0)
-        let coordinator = reader.makeCoordinator()
-        let container = NSTextContainer(size: CGSize(width: 240, height: CGFloat.greatestFiniteMagnitude))
-        let manager = NSLayoutManager()
-        let storage = NSTextStorage(string: String(repeating: "上下边距测试正文，翻页不能截断文字。\n", count: 80),
-                                   attributes: ReaderTypography(configuration: reader).bodyAttributes)
-        storage.addLayoutManager(manager)
-        manager.addTextContainer(container)
-        let view = UITextView(frame: CGRect(x: 0, y: 0, width: 240, height: 317), textContainer: container)
+    func testWholeLinePageBoundariesCoverEveryGlyphAfterReflow() {
+        for height in [CGFloat(317), 619.3, 803.5] {
+            for size in [20.0, 28.0, 34.0] {
+                let reader = configuration(fontSize: size, pageAnimation: 0)
+                let container = NSTextContainer(size: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
+                let manager = NSLayoutManager()
+                let text = String(repeating: "他说：“他们说的没错……打仗打的就是国力。”🌙\n\n韩信笑着说道。\n", count: 50) + "\n\n"
+                let storage = NSTextStorage(string: text, attributes: ReaderTypography(configuration: reader).bodyAttributes)
+                storage.addLayoutManager(manager)
+                manager.addTextContainer(container)
+                let view = UITextView(frame: CGRect(x: 0, y: 0, width: 280, height: height), textContainer: container)
+                view.textContainerInset = UIEdgeInsets.zero
+                let pages = ReaderTextPagination.pages(in: view)
+                XCTAssertGreaterThan(pages.count, 2)
+                var nextGlyph = 0
+                for page in pages {
+                    XCTAssertEqual(page.glyphRange.location, nextGlyph)
+                    XCTAssertGreaterThan(page.glyphRange.length, 0)
+                    XCTAssertLessThanOrEqual(page.visibleHeight, height)
+                    nextGlyph = NSMaxRange(page.glyphRange)
+                }
+                XCTAssertEqual(nextGlyph, manager.numberOfGlyphs)
+                manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, _, _, range, _ in
+                    let characters = manager.characterRange(forGlyphRange: range, actualGlyphRange: nil)
+                    if (text as NSString).substring(with: characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
+                    let page = pages[ReaderTextPagination.index(containing: range.location, pages: pages)]
+                    XCTAssertLessThanOrEqual(NSMaxRange(range), NSMaxRange(page.glyphRange), "A line must belong to exactly one page")
+                    let ink = manager.boundingRect(forGlyphRange: range, in: container)
+                    XCTAssertGreaterThanOrEqual(ink.minY, page.offset - 0.01)
+                    XCTAssertLessThanOrEqual(ink.maxY, page.offset + page.visibleHeight + 0.01)
+                    XCTAssertLessThanOrEqual(ink.maxY, page.offset + height + 0.01)
+                }
+            }
+        }
+    }
+
+    func testRestoringInsideALineAndChangingChapterUseTheNewPageBoundaries() async {
+        let coordinator = configuration(pageAnimation: 0).makeCoordinator()
+        let view: ReaderLayoutTextView
+        if #available(iOS 16.0, *) { view = ReaderLayoutTextView(usingTextLayoutManager: false) }
+        else { view = ReaderLayoutTextView(frame: .zero) }
+        view.paginates = true
+        view.contentInsetAdjustmentBehavior = .never
         view.textContainerInset = UIEdgeInsets.zero
+        view.frame = CGRect(x: 0, y: 0, width: 280, height: 317)
+        view.attributedText = NSAttributedString(string: String(repeating: "恢复阅读后每一行都应完整，不能露出下一页的半行文字。\n", count: 70),
+                                                 attributes: [.font: UIFont.systemFont(ofSize: 28)])
+        view.invalidatePagination()
+        view.layoutIfNeeded()
         coordinator.installDisplayLink(for: view)
         defer { coordinator.invalidate() }
-        manager.delegate = coordinator
-        manager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
-        manager.ensureLayout(for: container)
-        var lineCount = 0
-        var previousBottom: CGFloat = 0
-        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { rect, used, _, _, _ in
-            let boundary = (floor(rect.minY / view.bounds.height) + 1) * view.bounds.height
-            XCTAssertLessThanOrEqual(rect.maxY, boundary + 0.01)
-            XCTAssertLessThanOrEqual(used.maxY, boundary + 0.01)
-            XCTAssertGreaterThanOrEqual(rect.minY, previousBottom - 0.01)
-            previousBottom = rect.maxY
-            lineCount += 1
+        guard view.pages.count > 2 else { XCTFail("Expected a multipage layout"); return }
+        let page = view.pages[min(2, view.pages.count - 1)]
+        let characters = view.layoutManager.characterRange(forGlyphRange: page.glyphRange, actualGlyphRange: nil)
+        let position = characters.location + 2
+        @MainActor func restore(_ position: Int) async {
+            coordinator.scroll(to: position, in: view)
+            let applied = expectation(description: "Restored with complete layout")
+            DispatchQueue.main.async { applied.fulfill() }
+            await fulfillment(of: [applied], timeout: 2)
         }
-        XCTAssertGreaterThan(lineCount, 80)
-        XCTAssertGreaterThan(manager.usedRect(for: container).height, view.bounds.height * 2)
+        await restore(position)
+        XCTAssertEqual(view.contentOffset.y, page.offset, accuracy: 0.5)
+        view.frame.size.height = 389.5
+        view.invalidatePagination()
+        view.layoutIfNeeded()
+        await restore(position)
+        let glyph = view.layoutManager.glyphIndexForCharacter(at: position)
+        let rebuilt = view.pages[ReaderTextPagination.index(containing: glyph, pages: view.pages)]
+        XCTAssertEqual(view.contentOffset.y, rebuilt.offset, accuracy: 0.5)
+        let mask = view.layer.mask as? CAShapeLayer
+        XCTAssertEqual(mask?.path?.boundingBoxOfPath.height ?? -1, rebuilt.visibleHeight, accuracy: 0.5)
+
+        view.attributedText = NSAttributedString(string: String(repeating: "上一章的最后一页也必须使用重新计算的边界。\n", count: 40) + "\n\n",
+                                                 attributes: [.font: UIFont.systemFont(ofSize: 23)])
+        view.invalidatePagination()
+        view.layoutIfNeeded()
+        await restore(Int.max)
+        XCTAssertEqual(view.contentOffset.y, view.pages.last?.offset ?? -1, accuracy: 0.5)
     }
 
     func testPrependingAndRecyclingStayWithinOnePhysicalPixel() async throws {
