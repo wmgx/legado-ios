@@ -1504,30 +1504,42 @@ struct ReaderView: View {
         marginID: String? = nil,
         format: @escaping (Double) -> String
     ) -> some View {
-        VStack(spacing: 6) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(format(value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary)
+        readerSliderRow(title, label: marginID ?? title, value: value, range: range, step: step, format: format) { editing in
+            let id = marginID ?? title
+            if editing {
+                activeSlider = ReaderSliderPreview(id: id, title: title, value: value, range: range, step: step, format: format)
+            } else if activeSlider?.id == id {
+                activeSlider = nil
             }
-            Slider(value: value, in: range, step: step, onEditingChanged: { editing in
-                let id = marginID ?? title
-                if editing {
-                    activeSlider = ReaderSliderPreview(id: id, value: value, range: range, step: step, format: format)
-                } else if activeSlider?.id == id {
-                    activeSlider = nil
-                }
-            })
-            .accessibilityLabel(marginID ?? title)
-            .accessibilityValue(format(value.wrappedValue))
         }
         .anchorPreference(key: ReaderSliderAnchorKey.self, value: .bounds) { anchor in
             [marginID ?? title: anchor]
         }
     }
 
+    private func readerSliderRow(
+        _ title: String, label: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double,
+        format: @escaping (Double) -> String, onEditingChanged: @escaping (Bool) -> Void
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.subheadline)
+                .frame(minWidth: 42, alignment: .leading)
+            Slider(value: value, in: range, step: step, onEditingChanged: onEditingChanged)
+                .accessibilityLabel(label)
+                .accessibilityValue(format(value.wrappedValue))
+            Text(format(value.wrappedValue))
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .frame(minWidth: 40, alignment: .trailing)
+        }
+        .frame(minHeight: 44)
+    }
+
     private struct ReaderSliderPreview {
         let id: String
+        let title: String
         let value: Binding<Double>
         let range: ClosedRange<Double>
         let step: Double
@@ -1535,18 +1547,12 @@ struct ReaderView: View {
     }
 
     private func readerPreviewSlider(_ preview: ReaderSliderPreview) -> some View {
-        VStack(spacing: 6) {
-            HStack {
-                Text(preview.id)
-                Spacer()
-                Text(preview.format(preview.value.wrappedValue)).monospacedDigit()
+        readerSliderRow(preview.title, label: preview.id, value: preview.value, range: preview.range,
+                        step: preview.step, format: preview.format, onEditingChanged: { _ in })
+            .background {
+                RoundedRectangle(cornerRadius: 12).fill(.regularMaterial).padding(-10)
             }
-            Slider(value: preview.value, in: preview.range, step: preview.step)
-        }
-        .background {
-            RoundedRectangle(cornerRadius: 12).fill(.regularMaterial).padding(-10)
-        }
-        .accessibilityHidden(true)
+            .accessibilityHidden(true)
     }
 
     @ViewBuilder private func marginGuides(group: String, top: Double, bottom: Double, left: Double, right: Double) -> some View {
