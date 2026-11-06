@@ -54,7 +54,7 @@ jobs:
 
   reader-tests:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Select latest stable Xcode
@@ -70,7 +70,7 @@ jobs:
           xcrun simctl boot "$DEVICE_ID" || true
           xcrun simctl bootstatus "$DEVICE_ID" -b
       - name: Run reader regression tests
-        timeout-minutes: 12
+        timeout-minutes: 22
         run: |
           set -o pipefail
           xcodebuild -project Legado.xcodeproj -scheme LegadoReaderTests \
@@ -79,6 +79,19 @@ jobs:
             -test-timeouts-enabled YES -default-test-execution-time-allowance 60 \
             -maximum-test-execution-time-allowance 120 -parallel-testing-enabled NO \
             test 2>&1 | tee test.log
+      - name: Run style and directory UI regressions
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          xcodebuild -project Legado.xcodeproj -scheme LegadoReaderUITests \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath build-tests -resultBundlePath reader-ui-tests.xcresult \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 120 \
+            -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testStyleTabsKeepCommonSlidersAccessibleAndRestoreAfterPreview \
+            -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testDirectoryOpensAtCurrentChapterAndCanLocateItAfterFilteringAndReordering \
+            test 2>&1 | tee ui-test.log
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -87,3 +100,5 @@ jobs:
           path: |
             test.log
             reader-tests.xcresult
+            ui-test.log
+            reader-ui-tests.xcresult

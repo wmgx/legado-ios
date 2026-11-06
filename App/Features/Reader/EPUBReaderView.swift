@@ -48,6 +48,16 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
 
     var progress: Double { location?.locations.totalProgression ?? 0 }
 
+    var currentTOCEntryID: Int? {
+        guard let chapter = currentChapter else { return nil }
+        let matches = tableOfContents.filter { Self.path($0.link.href) == chapter.resourceUrl }
+        if let fragment = chapter.startFragmentId,
+           let exact = matches.first(where: { URLComponents(string: $0.link.href)?.fragment == fragment }) {
+            return exact.id
+        }
+        return matches.first(where: { $0.link.title == chapter.title })?.id ?? matches.first?.id
+    }
+
     func open(preferences: EPUBPreferences) async {
         guard navigator == nil, !isLoading else { return }
         isLoading = true
@@ -298,17 +308,44 @@ struct EPUBReaderView: View {
 
     private var tocSheet: some View {
         ReadingNavigationStack {
-            List(model.tableOfContents) { entry in
-                Button {
-                    showsTOC = false
-                    Task { await model.go(to: entry.link) }
-                } label: {
-                    Text(entry.link.title ?? "未命名章节")
-                        .foregroundStyle(.primary).padding(.leading, CGFloat(min(entry.depth, 6)) * 14)
+            ScrollViewReader { proxy in
+                List(model.tableOfContents) { entry in
+                    let isCurrent = entry.id == model.currentTOCEntryID
+                    Button {
+                        showsTOC = false
+                        Task { await model.go(to: entry.link) }
+                    } label: {
+                        HStack {
+                            Text(entry.link.title ?? "未命名章节")
+                                .foregroundStyle(.primary).padding(.leading, CGFloat(min(entry.depth, 6)) * 14)
+                            Spacer()
+                            if isCurrent { Image(systemName: "checkmark.circle.fill").foregroundStyle(ReadingTheme.accent) }
+                        }
+                    }
+                    .id(entry.id)
+                    .listRowBackground(isCurrent ? ReadingTheme.accent.opacity(0.08) : Color.clear)
+                    .accessibilityValue(isCurrent ? "正在阅读" : "")
+                }
+                .task(id: model.currentTOCEntryID) {
+                    await Task.yield()
+                    guard !Task.isCancelled, let id = model.currentTOCEntryID else { return }
+                    proxy.scrollTo(id, anchor: .center)
+                }
+                .navigationTitle("目录").navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("完成") { showsTOC = false } }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("当前章节", systemImage: "location") {
+                            if let id = model.currentTOCEntryID {
+                                withAnimation { proxy.scrollTo(id, anchor: .center) }
+                            }
+                        }
+                        .labelStyle(.iconOnly)
+                        .accessibilityLabel("定位当前章节")
+                        .disabled(model.currentTOCEntryID == nil)
+                    }
                 }
             }
-            .navigationTitle("目录").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { showsTOC = false } } }
         }
     }
 

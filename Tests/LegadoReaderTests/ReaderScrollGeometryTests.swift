@@ -172,6 +172,7 @@ final class ReaderScrollGeometryTests: XCTestCase {
         coordinator.installDisplayLink(for: view)
         defer { coordinator.invalidate() }
         manager.delegate = coordinator
+        manager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
         manager.ensureLayout(for: container)
         var lineCount = 0
         var previousBottom: CGFloat = 0
