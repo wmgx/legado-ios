@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct ReaderView: View {
     private var usesEPUBLayout = true
+    private var isStylePreview = false
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -187,6 +188,19 @@ struct ReaderView: View {
     }
 
 
+    init(stylePreview: Bool) {
+        let book = Book(bookUrl: "demo://reading-style-preview", name: "阅读排版预览", author: "示例正文")
+        let chapter = BookChapter(url: "demo://reading-style-preview/chapter", title: "第一章 · 窗边的光", bookUrl: book.bookUrl, index: 0)
+        let paragraphs = [
+            "清晨，阳光穿过窗帘，在书页上留下温暖的光影。远处传来几声鸟鸣，街道正缓缓醒来。她翻开昨天读到的那一页，继续寻找故事里的答案。",
+            "这是一段用于调整阅读样式的示例正文。试着拖动上、下、左、右边距，观察文字区域如何变化；彩色区域表示对应的留白。松开滑块，设置面板就会恢复。",
+            "一阵风吹过，窗外的树叶轻轻摇晃。文字在纸上安静排列，每一行都有自己的位置，每一页也留着恰到好处的空白。"
+        ]
+        self.init(demoBook: book, chapters: [chapter], initialIndex: 0, content: Array(repeating: paragraphs.joined(separator: "\n\n"), count: 6).joined(separator: "\n\n"))
+        isStylePreview = stylePreview
+        _showsStyleControls = State(initialValue: stylePreview)
+    }
+
     var body: some View {
         if usesEPUBLayout, book.origin == "local", URL(string: book.bookUrl)?.pathExtension.lowercased() == "epub" {
             EPUBReaderView(book: book, chapters: model.chapters, initialIndex: model.currentIndex)
@@ -214,6 +228,10 @@ struct ReaderView: View {
         }
         .animation(.easeOut(duration: 0.22), value: showsReaderMenu)
         .onAppear {
+            if isStylePreview {
+                backgroundImage = ReaderBackgroundStore.load()
+                return
+            }
             activity.beginReading(book)
             speech.onNextChapter = { moveSpeechToChapter(direction: 1) }
             speech.onPreviousChapter = { moveSpeechToChapter(direction: -1) }
@@ -245,6 +263,7 @@ struct ReaderView: View {
             }
         }
         .onDisappear {
+            guard !isStylePreview else { return }
             isAutoReading = false
             UIApplication.shared.isIdleTimerDisabled = false
             if speech.isSpeaking || speech.isPaused { speech.toggle(text: "") }
@@ -297,6 +316,20 @@ struct ReaderView: View {
                 }
             }
         }
+        .overlay(alignment: .top) {
+            if isStylePreview, activeMargin == nil {
+                HStack {
+                    Button("返回") { dismiss() }
+                    Spacer()
+                    Text("示例正文").font(.caption)
+                    Spacer()
+                    Button("调整样式") { showsStyleControls = true }
+                }
+                .padding(10)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.horizontal)
+            }
+        }
         .onChange(of: showsStyleControls) { shown in
             if shown { showsReaderMenu = false }
             else { activeMargin = nil }
@@ -326,6 +359,7 @@ struct ReaderView: View {
         .sheet(isPresented: $showsClickActionSettings) { clickActionSettings }
         .sheet(isPresented: $showsContentEditor) { contentEditor }
         .task(id: model.chapterLoadGeneration) {
+            guard !isStylePreview else { return }
             isWaitingForNextChapter = false
             isWaitingForPreviousChapter = false
             let needsInitialPosition = !model.hasLoadedCurrentChapter
@@ -399,6 +433,7 @@ struct ReaderView: View {
             updateIdleTimer()
         }
         .onChange(of: scenePhase) { phase in
+            guard !isStylePreview else { return }
             if phase == .active {
                 if !followsSystemBrightness {
                     UIScreen.main.brightness = CGFloat(readerBrightness)
@@ -429,6 +464,7 @@ struct ReaderView: View {
             currentPage = 1
             totalPages = 1
             UserDefaults.standard.set(value, forKey: "pageAnim")
+            guard !isStylePreview else { return }
             let updatedBook = model.useGlobalPageAnimation()
             Task { await library.addOrUpdate(updatedBook) }
         }
@@ -1102,11 +1138,13 @@ struct ReaderView: View {
     }
 
     private func updateIdleTimer() {
+        guard !isStylePreview else { return }
         UIApplication.shared.isIdleTimerDisabled = keepScreenOn || isAutoReading
             || (readAloudWakeLock && speech.isSpeaking)
     }
 
     private func pageDidChange() {
+        guard !isStylePreview else { return }
         saveProgress()
         guard enableReadRecord else { return }
         Task { await activity.checkpoint(book) }
@@ -1369,6 +1407,11 @@ struct ReaderView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("屏幕") {
+                    Toggle("阅读时不自动锁屏", isOn: $keepScreenOn)
+                    Toggle("阅读时隐藏小横条", isOn: $hideHomeIndicator)
+                }
+
                 Section("正文边距") {
                     valueSlider("左边距", value: $paddingLeft, range: 0...100, marginID: "正文左边距", format: { "\(Int($0))" })
                     valueSlider("右边距", value: $paddingRight, range: 0...100, marginID: "正文右边距", format: { "\(Int($0))" })
@@ -1414,7 +1457,10 @@ struct ReaderView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { showsStyleControls = false }
+                    Button("完成") {
+                        if isStylePreview { dismiss() }
+                        else { showsStyleControls = false }
+                    }
                 }
             }
         }
@@ -1488,6 +1534,8 @@ struct ReaderView: View {
                 guard let marginID else { return }
                 activeMargin = editing ? marginID : nil
             })
+            .accessibilityLabel(marginID ?? title)
+            .accessibilityValue(format(value.wrappedValue))
         }
         .anchorPreference(key: ReaderMarginAnchorKey.self, value: .bounds) { anchor in
             marginID.map { [$0: anchor] } ?? [:]
@@ -1650,6 +1698,10 @@ struct ReaderView: View {
     }
 
     private func handleTapAction(_ action: Int) {
+        if isStylePreview {
+            showsStyleControls = true
+            return
+        }
         switch action {
         case 0: showsReaderMenu.toggle()
         case 3: if model.canGoNext { moveChapter(1) }
@@ -2085,6 +2137,7 @@ struct ReaderView: View {
 
 
     private func saveProgress(immediate: Bool = false) {
+        guard !isStylePreview else { return }
         guard let chapter = model.currentChapter else { return }
         let position = readerPosition
         let currentBook = book

@@ -260,7 +260,7 @@ struct ReaderTextView: UIViewRepresentable {
         coordinator.invalidate()
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate, NSLayoutManagerDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate, @preconcurrency NSLayoutManagerDelegate {
         // Move an overflowing line to the next screen before TextKit places
         // subsequent lines. Every page then starts and ends on whole lines.
         func layoutManager(
