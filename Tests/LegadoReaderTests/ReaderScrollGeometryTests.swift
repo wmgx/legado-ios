@@ -17,13 +17,17 @@ private struct LiveSliderFixture: View {
         // value. The floating row must use live events, not this old getter.
         let snapshot = state.value
         let value = Binding(get: { snapshot }, set: { state.value = $0 })
-        ReadingPreviewPanel(activeSlider: $state.active, dismiss: {}) {
-            VStack {
-                ReadingPreviewSlider(title: "右边距", id: "正文右边距", value: value, range: 0...100,
-                                     step: 1, format: { "\(Int($0))" }, activeSlider: $state.active)
-                    .padding()
+        VStack {
+            ReadingPreviewSlider(title: "右边距", id: "正文右边距", value: value, range: 0...100,
+                                 step: 1, format: { "\(Int($0))" }, activeSlider: $state.active)
+            if let active = state.active {
+                // Render the same row as the floating overlay directly. Its
+                // UIKit view need not remain in the hierarchy when SwiftUI
+                // renders a noninteractive overlay.
+                ReadingSliderRow(preview: active)
             }
         }
+        .padding()
     }
 }
 
