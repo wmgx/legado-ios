@@ -178,12 +178,18 @@ struct ReadingPreviewPanel<Content: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let panelHeight = max(geometry.size.height * 0.55, 280)
             ZStack(alignment: .bottom) {
                 Color.black.opacity(activeSlider == nil ? 0.18 : 0)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: dismiss)
+                    .allowsHitTesting(false)
+                VStack(spacing: 0) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: dismiss)
+                    Color.clear.frame(height: panelHeight).allowsHitTesting(false)
+                }
                 content()
-                    .frame(height: max(geometry.size.height * 0.55, 280))
+                    .frame(height: panelHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                     // UIKit stops hit testing below 0.01, which can cancel the
                     // slider before it delivers its end-of-drag callback.

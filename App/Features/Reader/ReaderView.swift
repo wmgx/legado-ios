@@ -1934,9 +1934,14 @@ struct ReaderView: View {
                     }
                 }
                 .task(id: "\(model.currentChapter?.id ?? "")|\(tocDescending)|\(tocSearch.isEmpty)|\(model.chapters.count)") {
-                    await Task.yield()
+                    // Filtering and keyboard changes rebuild the list before
+                    // ScrollViewReader can resolve the current chapter's ID.
+                    try? await Task.sleep(nanoseconds: 200_000_000)
                     guard !Task.isCancelled, let chapter = model.currentChapter,
                         tocChapters.contains(where: { $0.id == chapter.id }) else { return }
+                    proxy.scrollTo(chapter.id, anchor: .center)
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    guard !Task.isCancelled else { return }
                     proxy.scrollTo(chapter.id, anchor: .center)
                 }
                 .toolbar {

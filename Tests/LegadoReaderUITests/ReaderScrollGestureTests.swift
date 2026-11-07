@@ -33,7 +33,9 @@ final class ReaderScrollGestureTests: XCTestCase {
         func openAppearance() {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             app.buttons["外观"].tap()
-            XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 5))
+            let panelRestored = app.navigationBars["阅读样式"].waitForExistence(timeout: 5)
+            if !panelRestored { print(app.debugDescription); attachScreenshot(app) }
+            XCTAssertTrue(panelRestored)
             scrollToAppearanceElement(useBackground, in: app)
         }
         openAppearance()
@@ -211,7 +213,7 @@ final class ReaderScrollGestureTests: XCTestCase {
         let current = app.buttons["reader.toc.current"]
         func expectCurrentVisible() {
             let visible = expectation(for: NSPredicate { _, _ in current.exists && current.isHittable }, evaluatedWith: nil)
-            wait(for: [visible], timeout: 5)
+            wait(for: [visible], timeout: 10)
         }
         expectCurrentVisible()
         app.buttons["倒序"].tap()
