@@ -188,10 +188,13 @@ final class ReaderScrollGeometryTests: XCTestCase {
     func testFloatingSliderTracksLiveValuesEvenWhenItsBindingCapturedTheStartingValue() async throws {
         let state = LiveSliderFixtureState()
         let controller = UIHostingController(rootView: LiveSliderFixture(state: state))
-        let window = UIWindow(frame: UIScreen.main.bounds)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previousKeyWindow = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
         window.rootViewController = controller
         window.makeKeyAndVisible()
-        defer { window.isHidden = true }
+        defer { window.isHidden = true; previousKeyWindow?.makeKeyAndVisible() }
         try await Task.sleep(nanoseconds: 100_000_000)
         controller.view.layoutIfNeeded()
         func sliders(in view: UIView) -> [UISlider] {
@@ -205,8 +208,12 @@ final class ReaderScrollGeometryTests: XCTestCase {
             let updated = expectation(description: "Live preview rendered")
             DispatchQueue.main.async { updated.fulfill() }
             await fulfillment(of: [updated], timeout: 3)
-            try await Task.sleep(nanoseconds: 100_000_000)
-            controller.view.layoutIfNeeded()
+            for _ in 0..<30 {
+                controller.view.setNeedsLayout()
+                controller.view.layoutIfNeeded()
+                if sliders(in: controller.view).contains(where: { $0 !== original && abs($0.value - value) < 0.01 }) { break }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
             XCTAssertEqual(state.value, Double(value), accuracy: 0.01)
             XCTAssertEqual(state.active?.displayValue ?? -1, Double(value), accuracy: 0.01)
             let floating = try XCTUnwrap(sliders(in: controller.view).first { $0 !== original })
