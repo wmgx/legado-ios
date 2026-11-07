@@ -66,6 +66,19 @@ enum ReaderTextPagination {
 }
 
 final class ReaderLayoutTextView: UITextView {
+    init() {
+        let storage = NSTextStorage()
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        super.init(frame: .zero, textContainer: container)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
     var paginates = false
     var onLayout: ((UITextView) -> Void)?
     private(set) var pages: [ReaderTextPage] = []
@@ -212,12 +225,7 @@ struct ReaderTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> UITextView {
         // Pagination uses NSLayoutManager. Start in TextKit 1 rather than
         // switching a TextKit 2 view after its content size has been computed.
-        let view: ReaderLayoutTextView
-        if #available(iOS 16.0, *) {
-            view = ReaderLayoutTextView(usingTextLayoutManager: false)
-        } else {
-            view = ReaderLayoutTextView(frame: .zero)
-        }
+        let view = ReaderLayoutTextView()
         view.onLayout = { [weak coordinator = context.coordinator] view in
             guard let coordinator else { return }
             let previousSize = coordinator.lastViewportSize

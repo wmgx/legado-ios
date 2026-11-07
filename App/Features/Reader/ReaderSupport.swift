@@ -185,7 +185,9 @@ struct ReadingPreviewPanel<Content: View>: View {
                 content()
                     .frame(height: max(geometry.size.height * 0.55, 280))
                     .clipShape(RoundedRectangle(cornerRadius: 20))
-                    .opacity(activeSlider == nil ? 1 : 0.001)
+                    // UIKit stops hit testing below 0.01, which can cancel the
+                    // slider before it delivers its end-of-drag callback.
+                    .opacity(activeSlider == nil ? 1 : 0.02)
             }
             .modifier(ReadingSliderPreviewLayer(preview: activeSlider))
         }

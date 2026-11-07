@@ -222,6 +222,10 @@ final class ReaderScrollGestureTests: XCTestCase {
         XCTAssertFalse(current.exists)
         app.buttons["定位当前章节"].tap()
         expectCurrentVisible()
+        // Clearing the query keeps UIKit's search mode active; leave search
+        // before using the navigation bar's close button.
+        let cancelSearch = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "取消"])).firstMatch
+        if cancelSearch.exists { cancelSearch.tap() }
         app.buttons["关闭"].tap()
         app.buttons["目录"].tap()
         expectCurrentVisible()

@@ -230,14 +230,8 @@ final class ReaderScrollGeometryTests: XCTestCase {
     }
 
     func testRestoringInsideALineAndChangingChapterUseTheNewPageBoundaries() async {
-        func trace(_ stage: String) {
-            FileHandle.standardError.write(Data("Pagination restoration: \(stage)\n".utf8))
-        }
-        trace("create view")
         let coordinator = configuration(pageAnimation: 0).makeCoordinator()
-        let view: ReaderLayoutTextView
-        if #available(iOS 16.0, *) { view = ReaderLayoutTextView(usingTextLayoutManager: false) }
-        else { view = ReaderLayoutTextView(frame: .zero) }
+        let view = ReaderLayoutTextView()
         view.paginates = true
         view.contentInsetAdjustmentBehavior = .never
         view.textContainerInset = UIEdgeInsets.zero
@@ -246,7 +240,6 @@ final class ReaderScrollGeometryTests: XCTestCase {
                                                  attributes: [.font: UIFont.systemFont(ofSize: 28)])
         view.invalidatePagination()
         view.layoutIfNeeded()
-        trace("initial layout complete")
         coordinator.installDisplayLink(for: view)
         defer { coordinator.invalidate() }
         guard view.pages.count > 2 else { XCTFail("Expected a multipage layout"); return }
@@ -260,14 +253,11 @@ final class ReaderScrollGeometryTests: XCTestCase {
             await fulfillment(of: [applied], timeout: 2)
         }
         await restore(position)
-        trace("initial restoration complete")
         XCTAssertEqual(view.contentOffset.y, page.offset, accuracy: 0.5)
         view.frame.size.height = 389.5
         view.invalidatePagination()
         view.layoutIfNeeded()
-        trace("resized layout complete")
         await restore(position)
-        trace("resized restoration complete")
         let glyph = view.layoutManager.glyphIndexForCharacter(at: position)
         let rebuilt = view.pages[ReaderTextPagination.index(containing: glyph, pages: view.pages)]
         XCTAssertEqual(view.contentOffset.y, rebuilt.offset, accuracy: 0.5)
@@ -279,9 +269,7 @@ final class ReaderScrollGeometryTests: XCTestCase {
                                                  attributes: [.font: UIFont.systemFont(ofSize: 23)])
         view.invalidatePagination()
         view.layoutIfNeeded()
-        trace("replacement layout complete")
         await restore(Int.max)
-        trace("chapter end restoration complete")
         XCTAssertEqual(view.contentOffset.y, view.pages.last?.offset ?? -1, accuracy: 0.5)
     }
 
