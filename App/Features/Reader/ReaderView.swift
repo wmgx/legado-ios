@@ -1919,6 +1919,20 @@ struct ReaderView: View {
                 .navigationTitle("目录")
                 .navigationBarTitleDisplayMode(.inline)
                 .searchable(text: $tocSearch, prompt: "搜索章节")
+                .safeAreaInset(edge: .bottom) {
+                    if !tocSearch.isEmpty {
+                        Button("定位当前章节", systemImage: "location") {
+                            tocSearch = ""
+                            if let chapter = model.currentChapter {
+                                withAnimation { proxy.scrollTo(chapter.id, anchor: .center) }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .padding(8)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                    }
+                }
                 .task(id: "\(model.currentChapter?.id ?? "")|\(tocDescending)|\(tocSearch.isEmpty)|\(model.chapters.count)") {
                     await Task.yield()
                     guard !Task.isCancelled, let chapter = model.currentChapter,

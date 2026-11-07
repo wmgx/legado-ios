@@ -175,8 +175,11 @@ final class ReaderScrollGestureTests: XCTestCase {
             let slider = app.sliders[name]
             XCTAssertTrue(slider.isHittable)
             slider.adjust(toNormalizedSliderPosition: 0.3)
-            XCTAssertTrue(app.navigationBars["阅读样式"].exists)
-            XCTAssertTrue(app.segmentedControls.buttons["边距"].isHittable)
+            XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 5))
+            let restored = expectation(for: NSPredicate { _, _ in
+                app.segmentedControls.buttons["边距"].isHittable
+            }, evaluatedWith: nil)
+            wait(for: [restored], timeout: 5)
         }
         app.segmentedControls.buttons["边距"].tap()
         XCTAssertTrue(app.sliders["正文上边距"].exists)

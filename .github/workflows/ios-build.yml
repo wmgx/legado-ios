@@ -118,6 +118,19 @@ jobs:
             -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testDirectoryOpensAtCurrentChapterAndCanLocateItAfterFilteringAndReordering \
             -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testBackwardPageAcrossChapterBoundaryOpensPreviousLastPage \
             test 2>&1 | tee ui-test.log
+      - name: Summarize iOS test failures
+        if: always()
+        run: |
+          for bundle in reader-tests.xcresult reader-ui-tests.xcresult; do
+            if [ -d "$bundle" ]; then
+              xcrun xcresulttool get test-results summary --path "$bundle" || true
+            fi
+          done
+          for report in "$HOME"/Library/Logs/DiagnosticReports/Legado*.ips; do
+            if [ -f "$report" ]; then
+              head -c 30000 "$report"
+            fi
+          done
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
