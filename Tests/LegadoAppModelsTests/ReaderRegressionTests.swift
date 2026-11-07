@@ -114,12 +114,16 @@ struct ReaderRegressionTests {
         model.toggleReplaceRules()
         #expect(model.chapterLoadGeneration > generation)
         #expect(!model.isLoading)
-        await model.load(rules: [rule], prefetchNextChapter: false)
+        // A raw chapter request may be shared or cached across generations.
+        // Its late result must not restore the old purification settings.
         await loader.finish()
         await oldLoad.value
+        #expect(model.content.isEmpty)
+        #expect(!model.hasLoadedCurrentChapter)
+        await model.load(rules: [rule], prefetchNextChapter: false)
 
         #expect(!model.usesReplaceRules)
-        #expect(model.content == "广告新正文")
+        #expect(model.content == "广告旧正文")
     }
 
     @Test func failedContinuousChapterPreservesReasonAndRetryFetchesFreshBody() async throws {
