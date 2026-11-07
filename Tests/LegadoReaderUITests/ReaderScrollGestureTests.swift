@@ -184,8 +184,10 @@ final class ReaderScrollGestureTests: XCTestCase {
             wait(for: [restored], timeout: 5)
         }
         app.segmentedControls.buttons["边距"].tap()
-        XCTAssertTrue(app.sliders["正文上边距"].exists)
+        scrollToAppearanceElement(app.sliders["正文上边距"], in: app)
+        XCTAssertTrue(app.sliders["正文上边距"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.sliders["页眉上边距"].exists)
+        scrollToAppearanceElement(app.buttons["页眉边距"], in: app)
         app.buttons["页眉边距"].tap()
         scrollToAppearanceElement(app.sliders["页眉上边距"], in: app)
         app.sliders["页眉上边距"].adjust(toNormalizedSliderPosition: 0.2)
@@ -226,7 +228,7 @@ final class ReaderScrollGestureTests: XCTestCase {
         expectCurrentVisible()
         // Clearing the query keeps UIKit's search mode active; leave search
         // before using the navigation bar's close button.
-        let cancelSearch = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "取消"])).firstMatch
+        let cancelSearch = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "取消", "close"])).firstMatch
         if cancelSearch.exists { cancelSearch.tap() }
         app.buttons["关闭"].tap()
         app.buttons["目录"].tap()

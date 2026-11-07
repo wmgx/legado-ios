@@ -1918,10 +1918,9 @@ struct ReaderView: View {
                 .listStyle(.insetGrouped)
                 .navigationTitle("目录")
                 .navigationBarTitleDisplayMode(.inline)
-                .searchable(text: $tocSearch, prompt: "搜索章节")
                 .safeAreaInset(edge: .bottom) {
                     if !tocSearch.isEmpty {
-                        Button("定位当前章节", systemImage: "location") {
+                        ReadingSearchExitButton {
                             tocSearch = ""
                             if let chapter = model.currentChapter {
                                 withAnimation { proxy.scrollTo(chapter.id, anchor: .center) }
@@ -1933,6 +1932,7 @@ struct ReaderView: View {
                         .background(.bar)
                     }
                 }
+                .searchable(text: $tocSearch, prompt: "搜索章节")
                 .task(id: "\(model.currentChapter?.id ?? "")|\(tocDescending)|\(tocSearch.isEmpty)|\(model.chapters.count)") {
                     // Filtering and keyboard changes rebuild the list before
                     // ScrollViewReader can resolve the current chapter's ID.

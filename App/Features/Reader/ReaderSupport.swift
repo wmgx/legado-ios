@@ -97,6 +97,18 @@ struct ReadingSliderPreview {
     let format: (Double) -> String
 }
 
+struct ReadingSearchExitButton: View {
+    @Environment(\.dismissSearch) private var dismissSearch
+    let action: () -> Void
+
+    var body: some View {
+        Button("定位当前章节", systemImage: "location") {
+            dismissSearch()
+            action()
+        }
+    }
+}
+
 struct ReadingSliderRow: View {
     let preview: ReadingSliderPreview
     var onEditingChanged: (Bool) -> Void = { _ in }
@@ -114,6 +126,7 @@ struct ReadingSliderRow: View {
                 }
             }
             .accessibilityLabel(preview.id)
+            .accessibilityIdentifier(preview.id)
             .accessibilityValue(preview.format(preview.value.wrappedValue))
             Text(preview.format(preview.value.wrappedValue))
                 .font(.subheadline.monospacedDigit())
