@@ -54,6 +54,7 @@ struct ReaderView: View {
     @State private var readerRenderRevision = 0
     @State private var isWaitingForNextChapter = false
     @State private var isWaitingForPreviousChapter = false
+    @State private var pendingPagedPosition: Int?
     @State private var httpTTSEngines: [HttpTTS] = []
     @State private var resumesSpeechAfterChapterLoad = false
     @State private var speechTimerTask: Task<Void, Never>?
@@ -300,26 +301,15 @@ struct ReaderView: View {
         .overlay {
             if showsStyleControls || showsAutoReadControls {
                 ReadingPreviewPanel(activeSlider: $activeSlider, dismiss: {
-                    showsStyleControls = false
-                    showsAutoReadControls = false
+                    if isStylePreview { dismiss() }
+                    else {
+                        showsStyleControls = false
+                        showsAutoReadControls = false
+                    }
                 }) {
                     if showsStyleControls { styleControls }
                     else { autoReadControls }
                 }
-            }
-        }
-        .overlay(alignment: .top) {
-            if isStylePreview, activeSlider == nil {
-                HStack {
-                    Button("返回") { dismiss() }
-                    Spacer()
-                    Text("示例正文").font(.caption)
-                    Spacer()
-                    Button("调整样式") { showsStyleControls = true }
-                }
-                .padding(10)
-                .background(.regularMaterial, in: Capsule())
-                .padding(.horizontal)
             }
         }
         .onChange(of: showsStyleControls) { shown in
@@ -358,6 +348,7 @@ struct ReaderView: View {
             guard !isStylePreview else { return }
             isWaitingForNextChapter = false
             isWaitingForPreviousChapter = false
+            pendingPagedPosition = nil
             let needsInitialPosition = !model.hasLoadedCurrentChapter
             if let pending = progressSaveTask {
                 let pendingGeneration = progressSaveGeneration
@@ -388,8 +379,12 @@ struct ReaderView: View {
             }
         }
         .task(id: "\(model.chapterLoadGeneration):\(pageAnimation == 3):\(model.hasLoadedCurrentChapter):\(model.scrollRevision)") {
-            guard pageAnimation == 3 else { return }
-            await model.prepareContinuousReading(rules: model.usesReplaceRules ? replaceRules.rules : [])
+            guard model.hasLoadedCurrentChapter else { return }
+            if pageAnimation == 3 {
+                await model.prepareContinuousReading(rules: model.usesReplaceRules ? replaceRules.rules : [])
+            } else {
+                await model.loadAdjacentChapters(rules: model.usesReplaceRules ? replaceRules.rules : [])
+            }
         }
         .onAppear { updateIdleTimer() }
         .onChange(of: keepScreenOn) { _ in
@@ -398,10 +393,12 @@ struct ReaderView: View {
         .onChange(of: adjacentReadiness) { _ in
             if model.isContinuationWindowReady, isWaitingForNextChapter {
                 isWaitingForNextChapter = false
-                readerRenderRevision &+= 1
+                if pageAnimation == 3 { readerRenderRevision &+= 1 }
+                else { advanceToPreparedPagedChapter(1, position: pendingPagedPosition) }
             }
             if model.isPreviousWindowReady, isWaitingForPreviousChapter {
-                advanceToPreparedPreviousChapter()
+                if pageAnimation == 3 { advanceToPreparedPreviousChapter() }
+                else { advanceToPreparedPagedChapter(-1, position: pendingPagedPosition) }
             }
         }
         .onChange(of: isAutoReading) { _ in
@@ -621,12 +618,12 @@ struct ReaderView: View {
         ReaderTextView(
             text: readerDisplayText,
             title: model.title,
-            previousTitle: pageAnimation == 3 ? model.previousTitle : nil,
+            previousTitle: model.canGoPrevious ? model.previousTitle : nil,
             previousText: pageAnimation == 3 ? model.previousContent : "",
-            isPreviousReady: pageAnimation == 3 && model.isPreviousWindowReady,
-            continuationTitle: pageAnimation == 3 ? model.continuationTitle : nil,
+            isPreviousReady: model.isPreviousWindowReady,
+            continuationTitle: model.canGoNext ? model.continuationTitle : nil,
             continuationText: pageAnimation == 3 ? model.continuationContent : "",
-            isContinuationReady: pageAnimation == 3 && model.isContinuationWindowReady,
+            isContinuationReady: model.isContinuationWindowReady,
             isVolume: model.currentChapter?.isVolume == true,
             fontSize: fontSize,
             fontPath: fontPath,
@@ -656,6 +653,8 @@ struct ReaderView: View {
             requestedPosition: pageAnimation == 3 ? readerPosition : model.requestedPosition,
             jumpPosition: readerJumpPosition,
             renderRevision: readerRenderRevision,
+            chapterRevision: model.chapterLoadGeneration,
+            chapterIndex: model.currentIndex,
             readerPosition: $readerPosition,
             pageRanges: $readerPageRanges,
             currentPage: $currentPage,
@@ -672,13 +671,11 @@ struct ReaderView: View {
                 if model.canGoNext {
                     showsReaderMenu = false
                     readerPosition = boundaryPosition
-                    saveProgress(immediate: true)
                     readerJumpPosition = nil
                     // Keep every chapter in its own TextKit document. Appending
                     // text here makes the absolute UTF-16 offset belong to the
                     // previous chapter while progress is saved under the next.
-                    model.goNext()
-                    readerPosition = model.requestedPosition
+                    advanceToPreparedPagedChapter(1)
                 } else {
                     isAutoReading = false
                 }
@@ -691,10 +688,8 @@ struct ReaderView: View {
                 guard model.canGoPrevious else { return }
                 showsReaderMenu = false
                 readerPosition = boundaryPosition
-                saveProgress(immediate: true)
                 readerJumpPosition = nil
-                model.goPrevious(position: Int.max)
-                readerPosition = model.requestedPosition
+                advanceToPreparedPagedChapter(-1)
             },
             onEnteredPrevious: { position in
                 guard pageAnimation == 3, model.canGoPrevious, model.hasPreviousWindow else { return }
@@ -1085,10 +1080,33 @@ struct ReaderView: View {
     private func moveChapter(_ direction: Int) {
         stopSpeechIfNeeded()
         showsReaderMenu = false
+        if pageAnimation != 3 {
+            advanceToPreparedPagedChapter(direction, position: 0)
+            return
+        }
         saveProgress(immediate: true)
         readerJumpPosition = nil
         if direction < 0 { model.goPrevious() } else { model.goNext() }
         readerPosition = model.requestedPosition
+    }
+
+    private func advanceToPreparedPagedChapter(_ direction: Int, position: Int? = nil) {
+        guard (direction < 0 ? model.canGoPrevious : model.canGoNext) else { return }
+        let ready = direction < 0 ? model.isPreviousWindowReady : model.isContinuationWindowReady
+        guard ready else {
+            pendingPagedPosition = position
+            if direction < 0 { isWaitingForPreviousChapter = true }
+            else { isWaitingForNextChapter = true }
+            return
+        }
+        isWaitingForPreviousChapter = false
+        isWaitingForNextChapter = false
+        pendingPagedPosition = nil
+        saveProgress(immediate: true)
+        readerJumpPosition = nil
+        if direction < 0 { model.goPrevious(position: position ?? Int.max) }
+        else { model.goNext(position: position ?? 0) }
+        readerPosition = min(model.requestedPosition, max(model.content.utf16.count - 1, 0))
     }
 
     private func requestNextChapter() {
@@ -1394,12 +1412,10 @@ struct ReaderView: View {
                     tipPicker("页眉中", selection: $tipHeaderMiddle)
                     tipPicker("页眉右", selection: $tipHeaderRight)
                     Toggle("页眉分隔线", isOn: $showHeaderLine)
-                    DisclosureGroup("页眉边距") {
-                        valueSlider("左边距", value: $headerPaddingLeft, range: 0...100, marginID: "页眉左边距", format: { "\(Int($0))" })
-                        valueSlider("右边距", value: $headerPaddingRight, range: 0...100, marginID: "页眉右边距", format: { "\(Int($0))" })
-                        valueSlider("上边距", value: $headerPaddingTop, range: 0...100, marginID: "页眉上边距", format: { "\(Int($0))" })
-                        valueSlider("下边距", value: $headerPaddingBottom, range: 0...100, marginID: "页眉下边距", format: { "\(Int($0))" })
-                    }
+                    valueSlider("左边距", value: $headerPaddingLeft, range: 0...100, marginID: "页眉左边距", format: { "\(Int($0))" })
+                    valueSlider("右边距", value: $headerPaddingRight, range: 0...100, marginID: "页眉右边距", format: { "\(Int($0))" })
+                    valueSlider("上边距", value: $headerPaddingTop, range: 0...100, marginID: "页眉上边距", format: { "\(Int($0))" })
+                    valueSlider("下边距", value: $headerPaddingBottom, range: 0...100, marginID: "页眉下边距", format: { "\(Int($0))" })
                 }
             }
             DisclosureGroup("页脚") {
@@ -1412,12 +1428,10 @@ struct ReaderView: View {
                     tipPicker("页脚中", selection: $tipFooterMiddle)
                     tipPicker("页脚右", selection: $tipFooterRight)
                     Toggle("页脚分隔线", isOn: $showFooterLine)
-                    DisclosureGroup("页脚边距") {
-                        valueSlider("左边距", value: $footerPaddingLeft, range: 0...100, marginID: "页脚左边距", format: { "\(Int($0))" })
-                        valueSlider("右边距", value: $footerPaddingRight, range: 0...100, marginID: "页脚右边距", format: { "\(Int($0))" })
-                        valueSlider("上边距", value: $footerPaddingTop, range: 0...100, marginID: "页脚上边距", format: { "\(Int($0))" })
-                        valueSlider("下边距", value: $footerPaddingBottom, range: 0...100, marginID: "页脚下边距", format: { "\(Int($0))" })
-                    }
+                    valueSlider("左边距", value: $footerPaddingLeft, range: 0...100, marginID: "页脚左边距", format: { "\(Int($0))" })
+                    valueSlider("右边距", value: $footerPaddingRight, range: 0...100, marginID: "页脚右边距", format: { "\(Int($0))" })
+                    valueSlider("上边距", value: $footerPaddingTop, range: 0...100, marginID: "页脚上边距", format: { "\(Int($0))" })
+                    valueSlider("下边距", value: $footerPaddingBottom, range: 0...100, marginID: "页脚下边距", format: { "\(Int($0))" })
                 }
             }
         }

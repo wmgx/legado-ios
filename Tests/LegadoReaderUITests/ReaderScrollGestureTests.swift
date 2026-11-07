@@ -194,8 +194,6 @@ final class ReaderScrollGestureTests: XCTestCase {
         XCTAssertFalse(app.sliders["页眉上边距"].exists)
         scrollToAppearanceElement(app.buttons["页眉"], in: app)
         app.buttons["页眉"].tap()
-        scrollToAppearanceElement(app.buttons["页眉边距"], in: app)
-        app.buttons["页眉边距"].tap()
         scrollToAppearanceElement(app.sliders["页眉上边距"], in: app)
         app.sliders["页眉上边距"].adjust(toNormalizedSliderPosition: 0.2)
         XCTAssertTrue(app.segmentedControls.buttons["文字"].isHittable)

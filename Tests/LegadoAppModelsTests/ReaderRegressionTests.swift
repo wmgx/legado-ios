@@ -5,6 +5,51 @@ import LegadoCore
 
 @MainActor
 struct ReaderRegressionTests {
+    @Test func preparedPagedChaptersSwitchSynchronouslyAndReuseThePreviousBody() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let book = Book(bookUrl: "prepared-book", name: "书", origin: "source")
+        let chapters = (0..<3).map { BookChapter(url: "prepared-\($0)", title: "第\($0)章", bookUrl: book.bookUrl, index: $0) }
+        let loader = TrackingPreloadReaderLoader()
+        let model = ReaderViewModel(book: book, chapters: chapters, initialIndex: 1,
+                                    source: .init(bookSourceUrl: book.origin, bookSourceName: "源"),
+                                    service: loader, cache: .init(directory: directory))
+        await model.load(rules: [], prefetchNextChapter: false)
+        await model.loadAdjacentChapters(rules: [])
+        #expect(model.isPreviousWindowReady && model.isContinuationWindowReady)
+        model.goNext()
+        #expect(model.currentIndex == 2 && model.content == "正文2")
+        #expect(model.hasLoadedCurrentChapter && !model.isLoading)
+        await model.load(rules: [], prefetchNextChapter: false)
+        model.goPrevious(position: Int.max)
+        #expect(model.currentIndex == 1 && model.content == "正文1")
+        #expect(model.requestedPosition == Int.max)
+        #expect(model.hasLoadedCurrentChapter && !model.isLoading)
+        await model.loadAdjacentChapters(rules: [])
+        model.goPrevious(position: Int.max)
+        #expect(model.currentIndex == 0 && model.content == "正文0")
+        #expect(model.hasLoadedCurrentChapter && !model.isLoading)
+        #expect(await loader.indices().count == 3)
+    }
+
+    @Test func preparedPagedChapterFailuresRemainVisibleAfterSwitchingInEitherDirection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let book = Book(bookUrl: "prepared-failure", name: "书", origin: "source")
+        let chapters = (0..<2).map { BookChapter(url: "failed-\($0)", title: "第\($0)章", bookUrl: book.bookUrl, index: $0) }
+        let model = ReaderViewModel(book: book, chapters: chapters, initialIndex: 0,
+                                    source: .init(bookSourceUrl: book.origin, bookSourceName: "源"),
+                                    service: RecoveringReaderLoader(partialBody: "仅第一页"), cache: .init(directory: directory))
+        await model.load(rules: [], prefetchNextChapter: false)
+        await model.loadAdjacentChapters(rules: [])
+        model.goNext()
+        #expect(model.content == "仅第一页")
+        #expect(model.currentChapterError == "HTTP 403：正文访问失败")
+        model.goPrevious(position: Int.max)
+        #expect(model.content == "仅第一页")
+        #expect(model.currentChapterError == "HTTP 403：正文访问失败")
+    }
+
     @Test func cachedChaptersMaintainTenReadableChaptersAheadInPagedAndScrollReading() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

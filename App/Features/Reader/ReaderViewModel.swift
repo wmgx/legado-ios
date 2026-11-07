@@ -59,6 +59,8 @@ final class ReaderViewModel: ObservableObject {
     private var demoChapterContent: String?
     private var previousLoadedIndex: Int?
     private var continuationLoadedIndex: Int?
+    private var previousChapterError: String?
+    private var continuationChapterError: String?
     @Published private(set) var scrollRetries: Set<Int> = []
     private var sourceCacheNeedsInvalidation = false
     private var pendingSourceContent: ChapterContentReport?
@@ -336,6 +338,7 @@ final class ReaderViewModel: ObservableObject {
             previousLoadedIndex = previousIndex
             previousTitle = previousIndex.map { chapters[$0].title } ?? ""
             previousContent = ""
+            previousChapterError = nil
             isPreviousWindowReady = false
         }
         let nextIndex = navigationIndex(direction: 1)
@@ -343,6 +346,7 @@ final class ReaderViewModel: ObservableObject {
             continuationLoadedIndex = nextIndex
             continuationTitle = nextIndex.map { chapters[$0].title } ?? ""
             continuationContent = ""
+            continuationChapterError = nil
             isContinuationWindowReady = false
         }
     }
@@ -367,6 +371,7 @@ final class ReaderViewModel: ObservableObject {
         if continuationLoadedIndex == nextIndex, needsNext {
             continuationTitle = resolvedNext?.title ?? nextIndex.map { chapters[$0].title } ?? ""
             continuationContent = resolvedNext?.content ?? ""
+            continuationChapterError = resolvedNext?.error
             isContinuationWindowReady = true
         }
         let resolvedPrevious = await previousValue
@@ -374,6 +379,7 @@ final class ReaderViewModel: ObservableObject {
         if previousLoadedIndex == previousIndex, needsPrevious {
             previousTitle = resolvedPrevious?.title ?? previousIndex.map { chapters[$0].title } ?? ""
             previousContent = resolvedPrevious?.content ?? ""
+            previousChapterError = resolvedPrevious?.error
             isPreviousWindowReady = true
         }
     }
@@ -497,8 +503,21 @@ final class ReaderViewModel: ObservableObject {
         return book
     }
 
-    func goPrevious(position: Int = 0) { if let value = navigationIndex(direction: -1) { select(index: value, position: position) } }
-    func goNext(position: Int = 0) { if let value = navigationIndex(direction: 1) { select(index: value, position: position) } }
+    func goPrevious(position: Int = 0) {
+        guard let value = navigationIndex(direction: -1) else { return }
+        if isPreviousWindowReady, previousLoadedIndex == value {
+            clearContinuousReading()
+            promotePrevious(position: position)
+        } else { select(index: value, position: position) }
+    }
+
+    func goNext(position: Int = 0) {
+        guard let value = navigationIndex(direction: 1) else { return }
+        if isContinuationWindowReady, continuationLoadedIndex == value {
+            clearContinuousReading()
+            promoteContinuation(position: position)
+        } else { select(index: value, position: position) }
+    }
 
     func promoteContinuation(position: Int) {
         guard let value = navigationIndex(direction: 1), hasContinuationWindow else {
@@ -507,22 +526,26 @@ final class ReaderViewModel: ObservableObject {
         let oldIndex = currentIndex
         let oldTitle = title
         let oldContent = content
+        let oldError = currentChapterError
+        let promotedError = continuationChapterError
         let promotedContentResolved = isContinuationWindowReady
         currentIndex = value
         title = continuationTitle.isEmpty ? chapters[value].title : continuationTitle
         content = continuationContent
         paragraphs = Self.makeParagraphs(continuationContent)
-        diagnostics = []
+        diagnostics = promotedError.map { [RuleDiagnostic(severity: .error, code: "content.request", message: $0, rule: chapters[value].url)] } ?? []
         requestedPosition = max(position, 0)
         loadedFromCache = promotedContentResolved
         hasLoadedCurrentChapter = promotedContentResolved
         previousLoadedIndex = oldIndex
         previousTitle = oldTitle
         previousContent = oldContent
+        previousChapterError = oldError
         isPreviousWindowReady = true
         continuationLoadedIndex = nil
         continuationTitle = ""
         continuationContent = ""
+        continuationChapterError = nil
         isContinuationWindowReady = false
         isLoading = false
         chapterLoadGeneration &+= 1
@@ -534,22 +557,26 @@ final class ReaderViewModel: ObservableObject {
         let oldIndex = currentIndex
         let oldTitle = title
         let oldContent = content
+        let oldError = currentChapterError
+        let promotedError = previousChapterError
         let promotedContentResolved = isPreviousWindowReady
         currentIndex = value
         title = previousTitle.isEmpty ? chapters[value].title : previousTitle
         content = previousContent
         paragraphs = Self.makeParagraphs(previousContent)
-        diagnostics = []
+        diagnostics = promotedError.map { [RuleDiagnostic(severity: .error, code: "content.request", message: $0, rule: chapters[value].url)] } ?? []
         requestedPosition = max(position, 0)
         loadedFromCache = promotedContentResolved
         hasLoadedCurrentChapter = promotedContentResolved
         continuationLoadedIndex = oldIndex
         continuationTitle = oldTitle
         continuationContent = oldContent
+        continuationChapterError = oldError
         isContinuationWindowReady = true
         previousLoadedIndex = nil
         previousTitle = ""
         previousContent = ""
+        previousChapterError = nil
         isPreviousWindowReady = false
         isLoading = false
         chapterLoadGeneration &+= 1
@@ -575,6 +602,8 @@ final class ReaderViewModel: ObservableObject {
 
     private func clearAdjacentChapters() {
         clearContinuousReading()
+        previousChapterError = nil
+        continuationChapterError = nil
         previousLoadedIndex = nil
         previousTitle = ""
         previousContent = ""

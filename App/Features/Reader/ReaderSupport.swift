@@ -270,14 +270,25 @@ struct ReadingPreviewPanel<Content: View>: View {
                 }
                 content()
                     .frame(height: panelHeight)
-                    .background(Color(uiColor: .systemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .clipShape(ReadingPanelOutline())
+                    .background(alignment: .top) {
+                        ReadingPanelOutline()
+                            .fill(Color(uiColor: .systemGroupedBackground))
+                            .padding(.bottom, -geometry.safeAreaInsets.bottom)
+                    }
                     // UIKit stops hit testing below 0.01, which can cancel the
                     // slider before it delivers its end-of-drag callback.
                     .opacity(activeSlider == nil ? 1 : 0.02)
             }
             .modifier(ReadingSliderPreviewLayer(preview: activeSlider))
         }
+    }
+}
+
+private struct ReadingPanelOutline: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(UIBezierPath(roundedRect: rect, byRoundingCorners: [.topLeft, .topRight],
+                          cornerRadii: CGSize(width: 20, height: 20)).cgPath)
     }
 }
 
