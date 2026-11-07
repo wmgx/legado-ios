@@ -197,6 +197,7 @@ final class ReaderScrollGestureTests: XCTestCase {
         scrollToAppearanceElement(app.sliders["页眉上边距"], in: app)
         app.sliders["页眉上边距"].adjust(toNormalizedSliderPosition: 0.2)
         XCTAssertTrue(app.segmentedControls.buttons["文字"].isHittable)
+        attachScreenshot(app)
         app.buttons["完成"].tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         let more = app.buttons["更多"]
@@ -363,6 +364,7 @@ final class ReaderScrollGestureTests: XCTestCase {
             expectChapter("第20章 · 连续阅读", atEnd: true)
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)).tap()
             expectChapter("第21章 · 连续阅读", atEnd: false)
+            attachScreenshot(app)
             app.terminate()
         }
     }

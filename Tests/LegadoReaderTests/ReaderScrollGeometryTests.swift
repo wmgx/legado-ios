@@ -185,6 +185,60 @@ final class ReaderBookmarkPersistenceTests: XCTestCase {
 
 @MainActor
 final class ReaderScrollGeometryTests: XCTestCase {
+    func testChapterSnapshotsKeepBlankRegionsOpaqueAndExcludeTheOutgoingPage() throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        let controller = UIViewController()
+        controller.view.backgroundColor = .red
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; previous?.makeKeyAndVisible() }
+        let page = UIView(frame: CGRect(x: 24, y: 70, width: 120, height: 100))
+        page.backgroundColor = .red
+        let label = UILabel(frame: CGRect(x: 8, y: 4, width: 100, height: 30))
+        label.text = "旧页文字"
+        page.addSubview(label)
+        let mask = CAShapeLayer()
+        mask.frame = page.bounds
+        mask.path = UIBezierPath(rect: CGRect(x: 0, y: 0, width: 120, height: 40)).cgPath
+        page.layer.mask = mask
+        controller.view.addSubview(page)
+        controller.view.layoutIfNeeded()
+        let outgoing = try XCTUnwrap(ReaderChapterSnapshot.capture(page))
+        let oldImage = try XCTUnwrap(outgoing.image)
+        let oldData = oldImage.pngData()
+        outgoing.frame = page.frame
+        controller.view.addSubview(outgoing)
+        controller.view.backgroundColor = .blue
+        page.backgroundColor = .blue
+        label.text = "新页文字"
+        let incoming = try XCTUnwrap(ReaderChapterSnapshot.capture(page, excluding: outgoing))
+        let newImage = try XCTUnwrap(incoming.image)
+        func blankPixel(_ image: UIImage) throws -> [UInt8] {
+            let source = try XCTUnwrap(image.cgImage)
+            let crop = try XCTUnwrap(source.cropping(to: CGRect(x: 110 * image.scale, y: 75 * image.scale, width: 1, height: 1)))
+            var pixel = [UInt8](repeating: 0, count: 4)
+            return try pixel.withUnsafeMutableBytes { bytes in
+                let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: 1, height: 1,
+                    bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+                context.draw(crop, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+                return Array(bytes)
+            }
+        }
+        let oldPixel = try blankPixel(oldImage), newPixel = try blankPixel(newImage)
+        XCTAssertGreaterThan(oldPixel[0], 240)
+        XCTAssertLessThan(oldPixel[2], 10)
+        XCTAssertGreaterThan(newPixel[2], 240)
+        XCTAssertLessThan(newPixel[0], 10)
+        XCTAssertEqual(oldPixel[3], 255)
+        XCTAssertEqual(newPixel[3], 255)
+        XCTAssertFalse(outgoing.layer.isHidden)
+        XCTAssertEqual(oldImage.pngData(), oldData)
+    }
+
     func testFloatingSliderTracksLiveValuesEvenWhenItsBindingCapturedTheStartingValue() async throws {
         let state = LiveSliderFixtureState()
         let controller = UIHostingController(rootView: LiveSliderFixture(state: state))

@@ -8,6 +8,39 @@ struct ReaderTextPage {
 }
 
 @MainActor
+enum ReaderChapterSnapshot {
+    static func capture(_ view: UIView, excluding overlay: UIView? = nil) -> UIImageView? {
+        guard let window = view.window, view.bounds.width > 0, view.bounds.height > 0 else { return nil }
+        let viewport = view.convert(view.bounds, to: window)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = window.screen.scale
+        format.opaque = true
+        // A page's text mask must not make its unused area transparent. Render
+        // the complete viewport, including the reader background underneath it.
+        // Temporarily exclude the outgoing cover without committing a frame.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let hidden = overlay?.layer.isHidden
+        overlay?.layer.isHidden = true
+        defer {
+            if let hidden { overlay?.layer.isHidden = hidden }
+            CATransaction.commit()
+        }
+        let image = UIGraphicsImageRenderer(size: view.bounds.size, format: format).image { context in
+            let background = view.backgroundColor ?? .clear
+            (background.cgColor.alpha > 0 ? background : (window.backgroundColor ?? .systemBackground)).setFill()
+            context.fill(CGRect(origin: .zero, size: view.bounds.size))
+            context.cgContext.translateBy(x: -viewport.minX, y: -viewport.minY)
+            window.layer.render(in: context.cgContext)
+        }
+        let snapshot = UIImageView(image: image)
+        snapshot.isOpaque = true
+        snapshot.isUserInteractionEnabled = false
+        return snapshot
+    }
+}
+
+@MainActor
 enum ReaderTextPagination {
     static func pages(in view: UITextView) -> [ReaderTextPage] {
         let manager = view.layoutManager
@@ -1060,7 +1093,7 @@ struct ReaderTextView: UIViewRepresentable {
 
         func prepareChapterTurn(_ direction: Int, in view: UITextView) {
             guard chapterTurnCover == nil, usesPagination, !view.text.isEmpty, let host = view.superview,
-                  let snapshot = view.snapshotView(afterScreenUpdates: false) else { return }
+                  let snapshot = ReaderChapterSnapshot.capture(view) else { return }
             clearChapterTurn()
             let cover = UIView(frame: view.convert(view.bounds, to: host))
             cover.isUserInteractionEnabled = false
@@ -1087,7 +1120,7 @@ struct ReaderTextView: UIViewRepresentable {
             guard let cover = chapterTurnCover, !isAnimatingChapterTurn,
                   chapterTurnContentKey != primaryContentKey else { return }
             guard let oldPage = cover.subviews.first,
-                  let newPage = view.snapshotView(afterScreenUpdates: true) else {
+                  let newPage = ReaderChapterSnapshot.capture(view, excluding: cover) else {
                 clearChapterTurn()
                 return
             }
@@ -1097,7 +1130,7 @@ struct ReaderTextView: UIViewRepresentable {
             newPage.frame = cover.bounds
             cover.addSubview(newPage)
             let completion: (Bool) -> Void = { [weak self, weak cover] _ in
-                guard let self, self.chapterTurnCover === cover else { return }
+                guard let self, let cover, self.chapterTurnCover === cover else { return }
                 self.clearChapterTurn()
             }
             switch parent.isEInkMode ? 4 : parent.pageAnimation {
