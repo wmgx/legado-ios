@@ -171,6 +171,8 @@ final class ReaderScrollGestureTests: XCTestCase {
         continueAfterFailure = false
         let app = launchAppearance()
         app.segmentedControls.buttons["文字"].tap()
+        XCTAssertTrue(app.segmentedControls.buttons["高级"].exists)
+        XCTAssertTrue(app.buttons["恢复默认值"].exists)
         XCTAssertEqual(app.sliders.count, 4)
         XCTAssertFalse(app.buttons["选择字体文件"].exists)
         for name in ["字号", "字间距", "行间距", "段距"] {
@@ -183,10 +185,15 @@ final class ReaderScrollGestureTests: XCTestCase {
             }, evaluatedWith: nil)
             wait(for: [restored], timeout: 5)
         }
+        app.buttons["恢复默认值"].tap()
+        XCTAssertEqual(app.sliders["字号"].value as? String, "20")
+        XCTAssertEqual(app.sliders["行间距"].value as? String, "12")
         app.segmentedControls.buttons["边距"].tap()
         scrollToAppearanceElement(app.sliders["正文上边距"], in: app)
         XCTAssertTrue(app.sliders["正文上边距"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.sliders["页眉上边距"].exists)
+        scrollToAppearanceElement(app.buttons["页眉"], in: app)
+        app.buttons["页眉"].tap()
         scrollToAppearanceElement(app.buttons["页眉边距"], in: app)
         app.buttons["页眉边距"].tap()
         scrollToAppearanceElement(app.sliders["页眉上边距"], in: app)
@@ -194,8 +201,13 @@ final class ReaderScrollGestureTests: XCTestCase {
         XCTAssertTrue(app.segmentedControls.buttons["文字"].isHittable)
         app.buttons["完成"].tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        app.buttons["更多"].tap()
-        app.buttons["自动阅读"].tap()
+        let more = app.buttons["更多"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        more.tap()
+        let autoRead = app.buttons["自动阅读"]
+        if !autoRead.waitForExistence(timeout: 5) { more.tap() }
+        XCTAssertTrue(autoRead.waitForExistence(timeout: 5))
+        autoRead.tap()
         let speed = app.sliders["自动翻页速度"]
         XCTAssertTrue(speed.waitForExistence(timeout: 5))
         speed.adjust(toNormalizedSliderPosition: 0.6)
@@ -255,8 +267,8 @@ final class ReaderScrollGestureTests: XCTestCase {
         let safeBottom = app.frame.maxY - 60
         for _ in 0..<12 {
             if element.exists && element.isHittable && element.frame.maxY <= safeBottom { return }
-            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
-            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.88))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.94, dy: 0.72))
             start.press(forDuration: 0.05, thenDragTo: end)
         }
         print(app.debugDescription)

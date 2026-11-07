@@ -95,6 +95,17 @@ struct ReadingSliderPreview {
     let range: ClosedRange<Double>
     let step: Double?
     let format: (Double) -> String
+    var displayValue: Double
+
+    init(id: String, title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double?, format: @escaping (Double) -> String) {
+        self.id = id
+        self.title = title
+        self.value = value
+        self.range = range
+        self.step = step
+        self.format = format
+        displayValue = value.wrappedValue
+    }
 }
 
 struct ReadingSearchExitButton: View {
@@ -112,15 +123,16 @@ struct ReadingSearchExitButton: View {
 struct ReadingSliderRow: View {
     let preview: ReadingSliderPreview
     var onEditingChanged: (Bool) -> Void = { _ in }
+    var onValueChanged: (Double) -> Void = { _ in }
 
     var body: some View {
         HStack(spacing: 12) {
             Text(preview.title)
                 .font(.subheadline)
                 .frame(minWidth: 42, alignment: .leading)
-            ReadingSliderControl(preview: preview, onEditingChanged: onEditingChanged)
+            ReadingSliderControl(preview: preview, onEditingChanged: onEditingChanged, onValueChanged: onValueChanged)
                 .frame(maxWidth: .infinity, minHeight: 44)
-            Text(preview.format(preview.value.wrappedValue))
+            Text(preview.format(preview.displayValue))
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .fixedSize()
@@ -133,6 +145,7 @@ struct ReadingSliderRow: View {
 private struct ReadingSliderControl: UIViewRepresentable {
     let preview: ReadingSliderPreview
     let onEditingChanged: (Bool) -> Void
+    let onValueChanged: (Double) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -148,10 +161,10 @@ private struct ReadingSliderControl: UIViewRepresentable {
         context.coordinator.parent = self
         slider.minimumValue = Float(preview.range.lowerBound)
         slider.maximumValue = Float(preview.range.upperBound)
-        if !slider.isTracking { slider.value = Float(preview.value.wrappedValue) }
+        if !slider.isTracking { slider.value = Float(preview.displayValue) }
         slider.accessibilityIdentifier = preview.id
         slider.accessibilityLabel = preview.id
-        slider.accessibilityValue = preview.format(preview.value.wrappedValue)
+        slider.accessibilityValue = preview.format(preview.displayValue)
     }
 
     @MainActor final class Coordinator: NSObject {
@@ -174,7 +187,9 @@ private struct ReadingSliderControl: UIViewRepresentable {
             }
             value = min(max(value, preview.range.lowerBound), preview.range.upperBound)
             preview.value.wrappedValue = value
+            slider.value = Float(value)
             slider.accessibilityValue = preview.format(value)
+            parent.onValueChanged(value)
         }
 
         @objc func end(_ slider: UISlider) {
@@ -198,14 +213,18 @@ struct ReadingPreviewSlider: View {
 
     var body: some View {
         let preview = ReadingSliderPreview(id: id, title: title, value: value, range: range, step: step, format: format)
-        ReadingSliderRow(preview: preview) { editing in
+        ReadingSliderRow(preview: preview, onEditingChanged: { editing in
             if editing {
                 activeSlider = preview
             } else if activeSlider?.id == id {
                 activeSlider = nil
             }
             onEditingChanged(editing)
-        }
+        }, onValueChanged: { newValue in
+            guard var active = activeSlider, active.id == id else { return }
+            active.displayValue = newValue
+            activeSlider = active
+        })
         .anchorPreference(key: ReadingSliderAnchorKey.self, value: .bounds) { [id: $0] }
     }
 }
@@ -220,7 +239,7 @@ struct ReadingSliderPreviewLayer: ViewModifier {
                     let rect = geometry[anchor]
                     ReadingSliderRow(preview: preview)
                         .background {
-                            RoundedRectangle(cornerRadius: 12).fill(.regularMaterial).padding(-10)
+                            RoundedRectangle(cornerRadius: 12).fill(Color(uiColor: .secondarySystemGroupedBackground)).padding(-10)
                         }
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
@@ -251,6 +270,7 @@ struct ReadingPreviewPanel<Content: View>: View {
                 }
                 content()
                     .frame(height: panelHeight)
+                    .background(Color(uiColor: .systemGroupedBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                     // UIKit stops hit testing below 0.01, which can cancel the
                     // slider before it delivers its end-of-drag callback.

@@ -4,6 +4,29 @@ import UIKit
 import XCTest
 @testable import Legado
 
+@MainActor private final class LiveSliderFixtureState: ObservableObject {
+    @Published var value = 0.0
+    @Published var active: ReadingSliderPreview?
+}
+
+private struct LiveSliderFixture: View {
+    @ObservedObject var state: LiveSliderFixtureState
+
+    var body: some View {
+        // AppStorage's projected binding can capture a particular render's
+        // value. The floating row must use live events, not this old getter.
+        let snapshot = state.value
+        let value = Binding(get: { snapshot }, set: { state.value = $0 })
+        ReadingPreviewPanel(activeSlider: $state.active, dismiss: {}) {
+            VStack {
+                ReadingPreviewSlider(title: "右边距", id: "正文右边距", value: value, range: 0...100,
+                                     step: 1, format: { "\(Int($0))" }, activeSlider: $state.active)
+                    .padding()
+            }
+        }
+    }
+}
+
 private final class BackgroundPhotoProvider: NSItemProvider, @unchecked Sendable {
     let photoData: Data?
     let photoError: (any Error)?
@@ -158,6 +181,38 @@ final class ReaderBookmarkPersistenceTests: XCTestCase {
 
 @MainActor
 final class ReaderScrollGeometryTests: XCTestCase {
+    func testFloatingSliderTracksLiveValuesEvenWhenItsBindingCapturedTheStartingValue() async throws {
+        let state = LiveSliderFixtureState()
+        let controller = UIHostingController(rootView: LiveSliderFixture(state: state))
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = controller
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        controller.view.layoutIfNeeded()
+        func sliders(in view: UIView) -> [UISlider] {
+            (view as? UISlider).map { [$0] } ?? view.subviews.flatMap { sliders(in: $0) }
+        }
+        let original = try XCTUnwrap(sliders(in: controller.view).first)
+        original.sendActions(for: .touchDown)
+        for value in [Float(24), Float(67)] {
+            original.value = value
+            original.sendActions(for: .valueChanged)
+            let updated = expectation(description: "Live preview rendered")
+            DispatchQueue.main.async { updated.fulfill() }
+            await fulfillment(of: [updated], timeout: 3)
+            try await Task.sleep(nanoseconds: 100_000_000)
+            controller.view.layoutIfNeeded()
+            XCTAssertEqual(state.value, Double(value), accuracy: 0.01)
+            XCTAssertEqual(state.active?.displayValue ?? -1, Double(value), accuracy: 0.01)
+            let floating = try XCTUnwrap(sliders(in: controller.view).first { $0 !== original })
+            XCTAssertEqual(floating.value, value, accuracy: 0.01)
+            XCTAssertEqual(floating.accessibilityValue, "\(Int(value))")
+        }
+        original.sendActions(for: .touchUpInside)
+        XCTAssertNil(state.active)
+    }
+
     func testChapterEndJumpWaitsForViewportAndHandlesTrailingNewlines() async {
         let coordinator = configuration(pageAnimation: 0).makeCoordinator()
         let container = NSTextContainer(size: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))

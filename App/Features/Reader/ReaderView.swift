@@ -1201,7 +1201,7 @@ struct ReaderView: View {
                     Text("文字").tag(0)
                     Text("边距").tag(1)
                     Text("外观").tag(2)
-                    Text("更多").tag(3)
+                    Text("高级").tag(3)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
@@ -1219,9 +1219,15 @@ struct ReaderView: View {
                 }
                 .id(styleSection)
             }
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("阅读样式")
             .navigationBarTitleDisplayMode(.inline)
+            .readingNavigationBarBackground()
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("恢复默认值") { restoreCurrentStyleDefaults() }
+                        .accessibilityHint("恢复当前分类的默认设置")
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
                         if isStylePreview { dismiss() }
@@ -1256,6 +1262,58 @@ struct ReaderView: View {
         }
         .readingPresentationDetents([.medium])
         .readingPresentationDragIndicator()
+    }
+
+    private func restoreCurrentStyleDefaults() {
+        activeSlider = nil
+        switch styleSection {
+        case 0:
+            fontSize = 20
+            letterSpacing = 0.1
+            lineSpacing = 12
+            paragraphSpacing = 2
+            paragraphIndent = "　　"
+            fontWeight = 0
+            fontPath = ""
+            titleMode = 0
+            titleSize = 0
+            titleTopSpacing = 0
+            titleBottomSpacing = 0
+            underlineMode = 0
+            fullJustify = true
+        case 1:
+            paddingLeft = 16
+            paddingRight = 16
+            paddingTop = 6
+            paddingBottom = 6
+            headerPaddingLeft = 16
+            headerPaddingRight = 16
+            headerPaddingTop = 0
+            headerPaddingBottom = 0
+            footerPaddingLeft = 16
+            footerPaddingRight = 16
+            footerPaddingTop = 6
+            footerPaddingBottom = 6
+            headerMode = 0
+            footerMode = 0
+            showHeaderLine = false
+            showFooterLine = true
+            tipHeaderLeft = 2
+            tipHeaderMiddle = 0
+            tipHeaderRight = 3
+            tipFooterLeft = 1
+            tipFooterMiddle = 0
+            tipFooterRight = 6
+        case 2:
+            theme = "wechat"
+            previousDayTheme = "wechat"
+            useBackgroundImage = false
+            backgroundError = nil
+        default:
+            pageAnimation = 0
+            keepScreenOn = false
+            hideHomeIndicator = false
+        }
     }
 
     @ViewBuilder private var typographyStyleSections: some View {
@@ -1325,36 +1383,42 @@ struct ReaderView: View {
             valueSlider("下边距", value: $paddingBottom, range: 0...100, marginID: "正文下边距", format: { "\(Int($0))" })
         }
         Section("页眉页脚") {
-            DisclosureGroup("显示与内容") {
+            DisclosureGroup("页眉") {
                 Picker("页眉显示", selection: $headerMode) {
                     Text("状态栏显示时隐藏").tag(0)
                     Text("显示").tag(1)
                     Text("隐藏").tag(2)
                 }
+                if headerMode != 2 {
+                    tipPicker("页眉左", selection: $tipHeaderLeft)
+                    tipPicker("页眉中", selection: $tipHeaderMiddle)
+                    tipPicker("页眉右", selection: $tipHeaderRight)
+                    Toggle("页眉分隔线", isOn: $showHeaderLine)
+                    DisclosureGroup("页眉边距") {
+                        valueSlider("左边距", value: $headerPaddingLeft, range: 0...100, marginID: "页眉左边距", format: { "\(Int($0))" })
+                        valueSlider("右边距", value: $headerPaddingRight, range: 0...100, marginID: "页眉右边距", format: { "\(Int($0))" })
+                        valueSlider("上边距", value: $headerPaddingTop, range: 0...100, marginID: "页眉上边距", format: { "\(Int($0))" })
+                        valueSlider("下边距", value: $headerPaddingBottom, range: 0...100, marginID: "页眉下边距", format: { "\(Int($0))" })
+                    }
+                }
+            }
+            DisclosureGroup("页脚") {
                 Picker("页脚显示", selection: $footerMode) {
                     Text("显示").tag(0)
                     Text("隐藏").tag(1)
                 }
-                tipPicker("页眉左", selection: $tipHeaderLeft)
-                tipPicker("页眉中", selection: $tipHeaderMiddle)
-                tipPicker("页眉右", selection: $tipHeaderRight)
-                tipPicker("页脚左", selection: $tipFooterLeft)
-                tipPicker("页脚中", selection: $tipFooterMiddle)
-                tipPicker("页脚右", selection: $tipFooterRight)
-                Toggle("页眉分隔线", isOn: $showHeaderLine)
-                Toggle("页脚分隔线", isOn: $showFooterLine)
-            }
-            DisclosureGroup("页眉边距") {
-                valueSlider("左边距", value: $headerPaddingLeft, range: 0...100, marginID: "页眉左边距", format: { "\(Int($0))" })
-                valueSlider("右边距", value: $headerPaddingRight, range: 0...100, marginID: "页眉右边距", format: { "\(Int($0))" })
-                valueSlider("上边距", value: $headerPaddingTop, range: 0...100, marginID: "页眉上边距", format: { "\(Int($0))" })
-                valueSlider("下边距", value: $headerPaddingBottom, range: 0...100, marginID: "页眉下边距", format: { "\(Int($0))" })
-            }
-            DisclosureGroup("页脚边距") {
-                valueSlider("左边距", value: $footerPaddingLeft, range: 0...100, marginID: "页脚左边距", format: { "\(Int($0))" })
-                valueSlider("右边距", value: $footerPaddingRight, range: 0...100, marginID: "页脚右边距", format: { "\(Int($0))" })
-                valueSlider("上边距", value: $footerPaddingTop, range: 0...100, marginID: "页脚上边距", format: { "\(Int($0))" })
-                valueSlider("下边距", value: $footerPaddingBottom, range: 0...100, marginID: "页脚下边距", format: { "\(Int($0))" })
+                if footerMode != 1 {
+                    tipPicker("页脚左", selection: $tipFooterLeft)
+                    tipPicker("页脚中", selection: $tipFooterMiddle)
+                    tipPicker("页脚右", selection: $tipFooterRight)
+                    Toggle("页脚分隔线", isOn: $showFooterLine)
+                    DisclosureGroup("页脚边距") {
+                        valueSlider("左边距", value: $footerPaddingLeft, range: 0...100, marginID: "页脚左边距", format: { "\(Int($0))" })
+                        valueSlider("右边距", value: $footerPaddingRight, range: 0...100, marginID: "页脚右边距", format: { "\(Int($0))" })
+                        valueSlider("上边距", value: $footerPaddingTop, range: 0...100, marginID: "页脚上边距", format: { "\(Int($0))" })
+                        valueSlider("下边距", value: $footerPaddingBottom, range: 0...100, marginID: "页脚下边距", format: { "\(Int($0))" })
+                    }
+                }
             }
         }
     }
@@ -1511,7 +1575,7 @@ struct ReaderView: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .overlay(alignment: .top) {
-                    Text("\(activeSlider.id) \(Int(activeSlider.value.wrappedValue)) pt")
+                    Text("\(activeSlider.id) \(Int(activeSlider.displayValue)) pt")
                         .font(.caption.weight(.semibold))
                         .padding(6)
                         .background(.regularMaterial, in: Capsule())
