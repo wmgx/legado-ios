@@ -123,7 +123,7 @@ jobs:
 
   reader-tests:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Select latest stable Xcode
@@ -132,7 +132,7 @@ jobs:
           xcode-version: latest-stable
       - name: Boot iPhone simulator
         id: simulator
-        timeout-minutes: 3
+        timeout-minutes: 6
         run: |
           DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k in sorted(d["devices"], reverse=True) if "iOS" in k for v in d["devices"][k] if "iPhone" in v["name"]))')
           echo "id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
