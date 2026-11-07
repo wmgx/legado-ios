@@ -231,6 +231,10 @@ final class ReaderScrollGestureTests: XCTestCase {
         let cancelSearch = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "取消", "close"])).firstMatch
         if cancelSearch.exists { cancelSearch.tap() }
         app.buttons["关闭"].tap()
+        XCTAssertTrue(app.textViews["reader.text"].waitForExistence(timeout: 10))
+        if !app.buttons["目录"].exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        }
         app.buttons["目录"].tap()
         expectCurrentVisible()
     }
@@ -255,6 +259,8 @@ final class ReaderScrollGestureTests: XCTestCase {
             let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
             start.press(forDuration: 0.05, thenDragTo: end)
         }
+        print(app.debugDescription)
+        attachScreenshot(app)
         XCTAssertTrue(element.exists && element.isHittable && element.frame.maxY <= safeBottom)
     }
 

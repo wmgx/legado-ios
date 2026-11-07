@@ -118,16 +118,8 @@ struct ReadingSliderRow: View {
             Text(preview.title)
                 .font(.subheadline)
                 .frame(minWidth: 42, alignment: .leading)
-            Group {
-                if let step = preview.step {
-                    Slider(value: preview.value, in: preview.range, step: step, onEditingChanged: onEditingChanged)
-                } else {
-                    Slider(value: preview.value, in: preview.range, onEditingChanged: onEditingChanged)
-                }
-            }
-            .accessibilityLabel(preview.id)
-            .accessibilityIdentifier(preview.id)
-            .accessibilityValue(preview.format(preview.value.wrappedValue))
+            ReadingSliderControl(preview: preview, onEditingChanged: onEditingChanged)
+                .frame(maxWidth: .infinity, minHeight: 44)
             Text(preview.format(preview.value.wrappedValue))
                 .font(.subheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -135,6 +127,62 @@ struct ReadingSliderRow: View {
                 .frame(minWidth: 40, alignment: .trailing)
         }
         .frame(minHeight: 44)
+    }
+}
+
+private struct ReadingSliderControl: UIViewRepresentable {
+    let preview: ReadingSliderPreview
+    let onEditingChanged: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UISlider {
+        let slider = UISlider(frame: .zero)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.begin(_:)), for: .touchDown)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.change(_:)), for: .valueChanged)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.end(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        return slider
+    }
+
+    func updateUIView(_ slider: UISlider, context: Context) {
+        context.coordinator.parent = self
+        slider.minimumValue = Float(preview.range.lowerBound)
+        slider.maximumValue = Float(preview.range.upperBound)
+        if !slider.isTracking { slider.value = Float(preview.value.wrappedValue) }
+        slider.accessibilityIdentifier = preview.id
+        slider.accessibilityLabel = preview.id
+        slider.accessibilityValue = preview.format(preview.value.wrappedValue)
+    }
+
+    @MainActor final class Coordinator: NSObject {
+        var parent: ReadingSliderControl
+        private var editing = false
+
+        init(parent: ReadingSliderControl) { self.parent = parent }
+
+        @objc func begin(_ slider: UISlider) {
+            guard !editing else { return }
+            editing = true
+            parent.onEditingChanged(true)
+        }
+
+        @objc func change(_ slider: UISlider) {
+            let preview = parent.preview
+            var value = Double(slider.value)
+            if let step = preview.step, step > 0 {
+                value = preview.range.lowerBound + ((value - preview.range.lowerBound) / step).rounded() * step
+            }
+            value = min(max(value, preview.range.lowerBound), preview.range.upperBound)
+            preview.value.wrappedValue = value
+            slider.accessibilityValue = preview.format(value)
+        }
+
+        @objc func end(_ slider: UISlider) {
+            change(slider)
+            guard editing else { return }
+            editing = false
+            parent.onEditingChanged(false)
+        }
     }
 }
 

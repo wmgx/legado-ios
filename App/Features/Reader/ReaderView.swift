@@ -1207,6 +1207,7 @@ struct ReaderView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .accessibilityIdentifier("reader.style.categories")
+                .onChange(of: styleSection) { _ in activeSlider = nil }
 
                 Form {
                     switch styleSection {
