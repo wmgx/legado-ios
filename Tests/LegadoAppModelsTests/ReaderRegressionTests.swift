@@ -5,6 +5,76 @@ import LegadoCore
 
 @MainActor
 struct ReaderRegressionTests {
+    @Test func cachedChaptersMaintainTenReadableChaptersAheadInPagedAndScrollReading() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "legado.prefetch.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = ApplicationSettingsStore(defaults: defaults)
+        var value = ApplicationSettings()
+        value.prefetchChapters = 10
+        try settings.save(value)
+        let cache = ChapterContentCache(directory: directory)
+        let book = Book(bookUrl: "preload-book", name: "预加载测试", origin: "preload-source")
+        var chapters = (0..<15).map { BookChapter(url: "preload-\($0)", title: "第\($0)章", bookUrl: book.bookUrl, index: $0) }
+        chapters[4].isVolume = true
+        try await cache.save(.init(bookURL: book.bookUrl, chapterURL: chapters[0].url, content: "已缓存的当前章", sourceID: book.origin))
+        let loader = TrackingPreloadReaderLoader()
+        let model = ReaderViewModel(book: book, chapters: chapters, initialIndex: 0,
+                                    source: .init(bookSourceUrl: book.origin, bookSourceName: "源"),
+                                    service: loader, cache: cache, settingsStore: settings)
+        defer { model.cancelPreloading() }
+
+        await model.load(rules: [])
+        #expect(model.loadedFromCache)
+        await model.preloadTask?.value
+        #expect(await loader.indices() == [1, 2, 3, 5, 6, 7, 8, 9, 10, 11])
+        for index in [1, 2, 3, 5, 6, 7, 8, 9, 10, 11] {
+            #expect(try await cache.load(bookURL: book.bookUrl, chapterURL: chapters[index].url) != nil)
+        }
+        #expect(try await cache.load(bookURL: book.bookUrl, chapterURL: chapters[12].url) == nil)
+
+        model.goNext()
+        await model.load(rules: [])
+        #expect(model.loadedFromCache)
+        await model.preloadTask?.value
+        #expect(await loader.indices() == [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12])
+
+        await model.prepareContinuousReading(rules: [])
+        #expect(model.updateContinuousPosition(chapter: 2))
+        await model.preloadTask?.value
+        #expect(await loader.indices() == [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+        #expect(try await cache.load(bookURL: book.bookUrl, chapterURL: chapters[14].url) == nil)
+
+        model.select(index: 13)
+        await model.load(rules: [])
+        await model.preloadTask?.value
+        #expect(await loader.indices() == [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+        #expect(model.currentIndex == 13)
+    }
+
+    @Test func disabledPreloadingDoesNotRequestLaterChapters() async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "legado.prefetch.off.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = ApplicationSettingsStore(defaults: defaults)
+        var value = ApplicationSettings()
+        value.prefetchChapters = 0
+        try settings.save(value)
+        let book = Book(bookUrl: "off-book", name: "书", origin: "source")
+        let chapters = (0..<3).map { BookChapter(url: "off-\($0)", title: "章", bookUrl: book.bookUrl, index: $0) }
+        let loader = TrackingPreloadReaderLoader()
+        let model = ReaderViewModel(book: book, chapters: chapters, initialIndex: 0,
+                                    source: .init(bookSourceUrl: book.origin, bookSourceName: "源"),
+                                    service: loader, cache: .init(directory: directory), settingsStore: settings)
+        await model.load(rules: [])
+        #expect(model.preloadTask == nil)
+        #expect(await loader.indices() == [0])
+    }
+
     @Test func partialContentKeepsFailureVisibleAcrossContinuousChapters() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -44,12 +114,16 @@ struct ReaderRegressionTests {
         model.toggleReplaceRules()
         #expect(model.chapterLoadGeneration > generation)
         #expect(!model.isLoading)
-        await model.load(rules: [rule], prefetchNextChapter: false)
+        // A raw chapter request may be shared or cached across generations.
+        // Its late result must not restore the old purification settings.
         await loader.finish()
         await oldLoad.value
+        #expect(model.content.isEmpty)
+        #expect(!model.hasLoadedCurrentChapter)
+        await model.load(rules: [rule], prefetchNextChapter: false)
 
         #expect(!model.usesReplaceRules)
-        #expect(model.content == "广告新正文")
+        #expect(model.content == "广告旧正文")
     }
 
     @Test func failedContinuousChapterPreservesReasonAndRetryFetchesFreshBody() async throws {
@@ -450,4 +524,13 @@ private actor SuspendedReaderChapterLoader: ChapterContentLoading {
         pending?.resume(returning: .init(title: "旧章节", content: "迟到的正文"))
         pending = nil
     }
+}
+
+private actor TrackingPreloadReaderLoader: ChapterContentLoading {
+    private var requests: [Int] = []
+    func loadContent(book: Book, chapter: BookChapter, source: BookSource, nextChapterURL: String?, maxPages: Int) async -> ChapterContentReport {
+        requests.append(chapter.index)
+        return .init(title: chapter.title, content: "正文\(chapter.index)")
+    }
+    func indices() -> [Int] { requests }
 }

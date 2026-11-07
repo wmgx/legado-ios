@@ -1,0 +1,187 @@
+name: iOS test build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Show Xcode version
+        run: xcodebuild -version
+      - name: Build unsigned iPhone app
+        run: |
+          set -o pipefail
+          xcodebuild -project Legado.xcodeproj -scheme Legado \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build.log
+      - name: Package IPA for local signing
+        run: |
+          mkdir -p build/package/Payload
+          cp -R build/Build/Products/Release-iphoneos/Legado.app build/package/Payload/
+          cd build/package
+          zip -qry ../Legado-unsigned.ipa Payload
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Legado-unsigned-${{ github.sha }}
+          path: build/Legado-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: build.log
+
+  release:
+    name: Publish downloadable IPA
+    needs: [build, preload-tests, reader-tests]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: Legado-unsigned-${{ github.sha }}
+          path: release
+      - name: Publish test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_TAG: test-${{ github.run_number }}-${{ github.run_attempt }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -s release/Legado-unsigned.ipa
+          shasum -a 256 release/Legado-unsigned.ipa > release/SHA256SUMS.txt
+          cat > release/notes.md <<EOF
+          阅读器测试版，编译和自动测试均已通过。
+
+          直接下载下方的 Legado-unsigned.ipa，无需解压 Actions 产物。
+          这是未签名 IPA，请使用自己的签名工具安装。
+
+          构建提交：${RELEASE_COMMIT}
+          构建记录：${BUILD_URL}
+          EOF
+          gh release create "$RELEASE_TAG" \
+            release/Legado-unsigned.ipa release/SHA256SUMS.txt \
+            --target "$RELEASE_COMMIT" --prerelease \
+            --title "阅读器测试版 $RELEASE_TAG" --notes-file release/notes.md
+          {
+            echo '### IPA 下载'
+            echo "[直接下载 IPA](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/Legado-unsigned.ipa)"
+            echo "[Release 页面](https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  preload-tests:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Run preload and cache regressions
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          swift test --disable-sandbox \
+            --filter 'ChapterContentCacheTests|ApplicationSettingsTests|ReaderRegressionTests' \
+            2>&1 | tee preload-tests.log
+        env:
+          NSUnbufferedIO: YES
+      - name: Upload preload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preload-test-results
+          path: preload-tests.log
+
+  reader-tests:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Boot iPhone simulator
+        id: simulator
+        timeout-minutes: 3
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(v["udid"] for k in sorted(d["devices"], reverse=True) if "iOS" in k for v in d["devices"][k] if "iPhone" in v["name"]))')
+          echo "id=$DEVICE_ID" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$DEVICE_ID" || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+      - name: Run reader regression tests
+        timeout-minutes: 22
+        run: |
+          set -o pipefail
+          xcodebuild -project Legado.xcodeproj -scheme LegadoReaderTests \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath build-tests -resultBundlePath reader-tests.xcresult \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 60 \
+            -maximum-test-execution-time-allowance 120 -parallel-testing-enabled NO \
+            test 2>&1 | tee test.log
+      - name: Run style and directory UI regressions
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          xcodebuild -project Legado.xcodeproj -scheme LegadoReaderUITests \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath build-tests -resultBundlePath reader-ui-tests.xcresult \
+            -parallel-testing-enabled NO -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 90 -maximum-test-execution-time-allowance 120 \
+            -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testStyleTabsKeepCommonSlidersAccessibleAndRestoreAfterPreview \
+            -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testDirectoryOpensAtCurrentChapterAndCanLocateItAfterFilteringAndReordering \
+            -only-testing:LegadoReaderUITests/ReaderScrollGestureTests/testBackwardPageAcrossChapterBoundaryOpensPreviousLastPage \
+            test 2>&1 | tee ui-test.log
+      - name: Summarize iOS test failures
+        if: always()
+        run: |
+          for bundle in reader-tests.xcresult reader-ui-tests.xcresult; do
+            if [ -d "$bundle" ]; then
+              xcrun xcresulttool get test-results summary --path "$bundle" || true
+            fi
+          done
+          for report in "$HOME"/Library/Logs/DiagnosticReports/Legado*.ips; do
+            if [ -f "$report" ]; then
+              head -c 30000 "$report"
+            fi
+          done
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-test-results
+          path: |
+            test.log
+            reader-tests.xcresult
+            ui-test.log
+            reader-ui-tests.xcresult

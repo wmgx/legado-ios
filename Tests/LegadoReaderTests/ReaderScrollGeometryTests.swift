@@ -158,6 +158,121 @@ final class ReaderBookmarkPersistenceTests: XCTestCase {
 
 @MainActor
 final class ReaderScrollGeometryTests: XCTestCase {
+    func testChapterEndJumpWaitsForViewportAndHandlesTrailingNewlines() async {
+        let coordinator = configuration(pageAnimation: 0).makeCoordinator()
+        let container = NSTextContainer(size: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
+        let manager = NSLayoutManager()
+        let storage = NSTextStorage(string: String(repeating: "上一章的正文，返回时应从最后一屏继续阅读。\n", count: 80) + "\n\n",
+                                   attributes: [.font: UIFont.systemFont(ofSize: 20)])
+        storage.addLayoutManager(manager)
+        manager.addTextContainer(container)
+        let view = UITextView(frame: .zero, textContainer: container)
+        view.contentInsetAdjustmentBehavior = .never
+        view.textContainerInset = UIEdgeInsets.zero
+        coordinator.installDisplayLink(for: view)
+        defer { coordinator.invalidate() }
+
+        coordinator.scroll(to: Int.max, in: view)
+        let scheduled = expectation(description: "Initial scroll attempted before viewport exists")
+        DispatchQueue.main.async { scheduled.fulfill() }
+        await fulfillment(of: [scheduled], timeout: 2)
+        XCTAssertTrue(coordinator.hasPendingScroll)
+
+        view.frame = CGRect(x: 0, y: 0, width: 280, height: 317)
+        view.layoutIfNeeded()
+        XCTAssertTrue(coordinator.applyPendingScroll(in: view))
+        let lastOffset = view.contentSize.height - view.bounds.height
+        XCTAssertGreaterThan(lastOffset, 0)
+        XCTAssertEqual(view.contentOffset.y, lastOffset, accuracy: 0.5)
+        XCTAssertFalse(coordinator.hasPendingScroll)
+
+        coordinator.scroll(to: 0, in: view)
+        let returned = expectation(description: "Normal chapter-start navigation still works")
+        DispatchQueue.main.async { returned.fulfill() }
+        await fulfillment(of: [returned], timeout: 2)
+        XCTAssertEqual(view.contentOffset.y, 0, accuracy: 0.5)
+    }
+
+    func testWholeLinePageBoundariesCoverEveryGlyphAfterReflow() {
+        for height in [CGFloat(317), 619.3, 803.5] {
+            for size in [20.0, 28.0, 34.0] {
+                let reader = configuration(fontSize: size, pageAnimation: 0)
+                let container = NSTextContainer(size: CGSize(width: 280, height: CGFloat.greatestFiniteMagnitude))
+                let manager = NSLayoutManager()
+                let text = String(repeating: "他说：“他们说的没错……打仗打的就是国力。”🌙\n\n韩信笑着说道。\n", count: 50) + "\n\n"
+                let storage = NSTextStorage(string: text, attributes: ReaderTypography(configuration: reader).bodyAttributes)
+                storage.addLayoutManager(manager)
+                manager.addTextContainer(container)
+                let view = UITextView(frame: CGRect(x: 0, y: 0, width: 280, height: height), textContainer: container)
+                view.textContainerInset = UIEdgeInsets.zero
+                let pages = ReaderTextPagination.pages(in: view)
+                XCTAssertGreaterThan(pages.count, 2)
+                var nextGlyph = 0
+                for page in pages {
+                    XCTAssertEqual(page.glyphRange.location, nextGlyph)
+                    XCTAssertGreaterThan(page.glyphRange.length, 0)
+                    XCTAssertLessThanOrEqual(page.visibleHeight, height)
+                    nextGlyph = NSMaxRange(page.glyphRange)
+                }
+                XCTAssertEqual(nextGlyph, manager.numberOfGlyphs)
+                manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, _, _, range, _ in
+                    let characters = manager.characterRange(forGlyphRange: range, actualGlyphRange: nil)
+                    if (text as NSString).substring(with: characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
+                    let page = pages[ReaderTextPagination.index(containing: range.location, pages: pages)]
+                    XCTAssertLessThanOrEqual(NSMaxRange(range), NSMaxRange(page.glyphRange), "A line must belong to exactly one page")
+                    let ink = manager.boundingRect(forGlyphRange: range, in: container)
+                    XCTAssertGreaterThanOrEqual(ink.minY, page.offset - 0.01)
+                    XCTAssertLessThanOrEqual(ink.maxY, page.offset + page.visibleHeight + 0.01)
+                    XCTAssertLessThanOrEqual(ink.maxY, page.offset + height + 0.01)
+                }
+            }
+        }
+    }
+
+    func testRestoringInsideALineAndChangingChapterUseTheNewPageBoundaries() async {
+        let coordinator = configuration(pageAnimation: 0).makeCoordinator()
+        let view = ReaderLayoutTextView()
+        view.paginates = true
+        view.contentInsetAdjustmentBehavior = .never
+        view.textContainerInset = UIEdgeInsets.zero
+        view.frame = CGRect(x: 0, y: 0, width: 280, height: 317)
+        view.attributedText = NSAttributedString(string: String(repeating: "恢复阅读后每一行都应完整，不能露出下一页的半行文字。\n", count: 70),
+                                                 attributes: [.font: UIFont.systemFont(ofSize: 28)])
+        view.invalidatePagination()
+        view.layoutIfNeeded()
+        coordinator.installDisplayLink(for: view)
+        defer { coordinator.invalidate() }
+        guard view.pages.count > 2 else { XCTFail("Expected a multipage layout"); return }
+        let page = view.pages[min(2, view.pages.count - 1)]
+        let characters = view.layoutManager.characterRange(forGlyphRange: page.glyphRange, actualGlyphRange: nil)
+        let position = characters.location + 2
+        @MainActor func restore(_ position: Int) async {
+            coordinator.scroll(to: position, in: view)
+            let applied = expectation(description: "Restored with complete layout")
+            DispatchQueue.main.async { applied.fulfill() }
+            await fulfillment(of: [applied], timeout: 2)
+        }
+        await restore(position)
+        XCTAssertEqual(view.contentOffset.y, page.offset, accuracy: 0.5)
+        view.frame.size.height = 389.5
+        view.invalidatePagination()
+        view.layoutIfNeeded()
+        await restore(position)
+        let glyph = view.layoutManager.glyphIndexForCharacter(at: position)
+        let rebuilt = view.pages[ReaderTextPagination.index(containing: glyph, pages: view.pages)]
+        XCTAssertEqual(view.contentOffset.y, rebuilt.offset, accuracy: 0.5)
+        let mask = view.layer.mask as? CAShapeLayer
+        XCTAssertEqual(mask?.path?.boundingBoxOfPath.height ?? -1, rebuilt.visibleHeight, accuracy: 0.5)
+
+        view.invalidatePagination()
+        view.attributedText = NSAttributedString(string: String(repeating: "上一章的最后一页也必须使用重新计算的边界。\n", count: 40) + "\n\n",
+                                                 attributes: [.font: UIFont.systemFont(ofSize: 23)])
+        view.invalidatePagination()
+        view.layoutIfNeeded()
+        await restore(Int.max)
+        XCTAssertEqual(view.contentOffset.y, view.pages.last?.offset ?? -1, accuracy: 0.5)
+    }
+
     func testPrependingAndRecyclingStayWithinOnePhysicalPixel() async throws {
         let chapters = (4...6).map { chapter($0) }
         let fixture = host(chapters: chapters, active: 5)
@@ -320,14 +435,14 @@ final class ReaderScrollGeometryTests: XCTestCase {
               onRetainChapters: { _ in })
     }
 
-    private func configuration(fontSize: Double = 20) -> ReaderTextView {
+    private func configuration(fontSize: Double = 20, pageAnimation: Int = 3) -> ReaderTextView {
         .init(text: "", title: "", previousTitle: nil, previousText: "", isPreviousReady: false,
               continuationTitle: nil, continuationText: "", isContinuationReady: false, isVolume: false,
               fontSize: fontSize, fontPath: "", letterSpacing: 0, lineSpacing: 8, paragraphSpacing: 12,
               paragraphIndent: "　　", paddingLeft: 20, paddingRight: 20, paddingTop: 16, paddingBottom: 16,
               headerInset: 0, footerInset: 0, fontWeight: 0, titleMode: 0, titleSize: 4,
               titleTopSpacing: 16, titleBottomSpacing: 24, underlineMode: 0, isSelectable: false,
-              fullJustify: true, pageAnimation: 3, isEInkMode: false, clickActions: Array(repeating: 0, count: 9),
+              fullJustify: true, pageAnimation: pageAnimation, isEInkMode: false, clickActions: Array(repeating: 0, count: 9),
               backgroundColor: .white, foregroundColor: .black, requestedPosition: 0, jumpPosition: nil,
               renderRevision: 0, readerPosition: .constant(0), pageRanges: .constant([]),
               currentPage: .constant(1), totalPages: .constant(1), isAutoReading: false,
