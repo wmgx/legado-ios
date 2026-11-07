@@ -52,6 +52,10 @@ final class ReaderViewModel: ObservableObject {
     private let localService: LocalBookService
     private let sanitizer = ContentSanitizer()
     private let contentCoordinator: ChapterContentCoordinator
+    private let settingsStore: ApplicationSettingsStore
+    private(set) var preloadTask: Task<Void, Never>?
+    private var preloadKey: String?
+    private var isPreloadingEnabled = true
     private var demoChapterContent: String?
     private var previousLoadedIndex: Int?
     private var continuationLoadedIndex: Int?
@@ -73,6 +77,7 @@ final class ReaderViewModel: ObservableObject {
 
     func prepareContinuousReading(rules: [ReplaceRule]) async {
         guard hasLoadedCurrentChapter else { return }
+        resumePreloading()
         if scrollChapters.isEmpty {
             scrollChapters = [scrollChapterForCurrentContent()]
         }
@@ -148,6 +153,7 @@ final class ReaderViewModel: ObservableObject {
         paragraphs = Self.makeParagraphs(chapter.content)
         diagnostics = []
         hasLoadedCurrentChapter = true
+        resumePreloading()
     }
 
     private func scrollChapterForCurrentContent() -> ReaderScrollChapter {
@@ -169,8 +175,10 @@ final class ReaderViewModel: ObservableObject {
         initialIndex: Int,
         source: BookSource,
         service: any ChapterContentLoading = NetworkBookService(),
-        cache: ChapterContentCache = .live()
+        cache: ChapterContentCache = .live(),
+        settingsStore: ApplicationSettingsStore = .shared
     ) {
+        self.settingsStore = settingsStore
         let resolvedIndex = Self.validIndex(initialIndex, chapters: chapters)
         self.book = book
         self.chapters = chapters
@@ -197,6 +205,7 @@ final class ReaderViewModel: ObservableObject {
         localService: LocalBookService = .init(),
         cache: ChapterContentCache = .live()
     ) {
+        settingsStore = .shared
         let resolvedIndex = Self.validIndex(initialIndex, chapters: chapters)
         self.book = book
         self.chapters = chapters
@@ -244,7 +253,12 @@ final class ReaderViewModel: ObservableObject {
     }
 
     func load(rules: [ReplaceRule], forceRefresh: Bool = false, prefetchNextChapter: Bool = true) async {
-        guard (content.isEmpty || forceRefresh), !isLoading else { return }
+        isPreloadingEnabled = prefetchNextChapter
+        if !prefetchNextChapter || forceRefresh { cancelPreloading() }
+        guard (content.isEmpty || forceRefresh), !isLoading else {
+            if prefetchNextChapter { resumePreloading() }
+            return
+        }
         guard let chapter = currentChapter else { return }
         let requestedIndex = currentIndex
         let requestedGeneration = chapterLoadGeneration
@@ -300,7 +314,6 @@ final class ReaderViewModel: ObservableObject {
         }
         guard requestedGeneration == chapterLoadGeneration, !Task.isCancelled else { return }
         loadedFromCache = fromCache
-        if prefetchNextChapter, !fromCache, let source { schedulePreload(after: requestedIndex, source: source) }
         hasLoadedCurrentChapter = true
         var effectiveChapter = chapter
         if let resolvedTitle = report.title { effectiveChapter.title = resolvedTitle }
@@ -314,6 +327,7 @@ final class ReaderViewModel: ObservableObject {
         content = processed.content
         paragraphs = Self.makeParagraphs(processed.content)
         diagnostics = report.diagnostics + processed.diagnostics
+        if prefetchNextChapter { resumePreloading() }
     }
 
     func prepareAdjacentWindows() {
@@ -512,6 +526,7 @@ final class ReaderViewModel: ObservableObject {
         isContinuationWindowReady = false
         isLoading = false
         chapterLoadGeneration &+= 1
+        resumePreloading()
     }
 
     func promotePrevious(position: Int) {
@@ -538,10 +553,12 @@ final class ReaderViewModel: ObservableObject {
         isPreviousWindowReady = false
         isLoading = false
         chapterLoadGeneration &+= 1
+        resumePreloading()
     }
 
     func select(index: Int, position: Int = 0) {
         guard chapters.indices.contains(index), !chapters[index].isVolume else { return }
+        cancelPreloading()
         currentIndex = index
         pendingSourceContent = nil
         title = chapters[index].title
@@ -594,11 +611,28 @@ final class ReaderViewModel: ObservableObject {
         return nil
     }
 
+    func resumePreloading() {
+        guard isPreloadingEnabled, hasLoadedCurrentChapter, currentChapterError == nil,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let source else { return }
+        schedulePreload(after: currentIndex, source: source)
+    }
+
+    func cancelPreloading() {
+        preloadTask?.cancel()
+        preloadTask = nil
+        preloadKey = nil
+    }
+
     private func schedulePreload(after index: Int, source: BookSource) {
-        let count = ApplicationSettingsStore.shared.settings.prefetchChapters
+        let count = settingsStore.settings.prefetchChapters
+        let key = "\(book.bookUrl)|\(source.id)|\(index)|\(count)"
+        guard key != preloadKey else { return }
+        cancelPreloading()
+        guard count > 0, index + 1 < chapters.count else { return }
         let jobs = ChapterCachePlanner.plan(chapters: chapters, startIndex: index + 1, limit: count)
-        guard index + 1 < chapters.count, !jobs.isEmpty else { return }
-        Task { [book, contentCoordinator] in
+        guard !jobs.isEmpty else { return }
+        preloadKey = key
+        preloadTask = Task(priority: .utility) { [book, contentCoordinator] in
             for job in jobs {
                 guard !Task.isCancelled else { return }
                 await contentCoordinator.prefetch(book: book, chapter: job.chapter, source: source, nextChapterURL: job.nextChapterURL)
