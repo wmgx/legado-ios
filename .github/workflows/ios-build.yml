@@ -52,6 +52,50 @@ jobs:
           name: ios-build-log
           path: build.log
 
+  release:
+    name: Publish downloadable IPA
+    needs: [build, preload-tests, reader-tests]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: Legado-unsigned-${{ github.sha }}
+          path: release
+      - name: Publish test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_TAG: test-${{ github.run_number }}-${{ github.run_attempt }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -s release/Legado-unsigned.ipa
+          shasum -a 256 release/Legado-unsigned.ipa > release/SHA256SUMS.txt
+          cat > release/notes.md <<EOF
+          阅读器测试版，编译和自动测试均已通过。
+
+          直接下载下方的 Legado-unsigned.ipa，无需解压 Actions 产物。
+          这是未签名 IPA，请使用自己的签名工具安装。
+
+          构建提交：${RELEASE_COMMIT}
+          构建记录：${BUILD_URL}
+          EOF
+          gh release create "$RELEASE_TAG" \
+            release/Legado-unsigned.ipa release/SHA256SUMS.txt \
+            --target "$RELEASE_COMMIT" --prerelease \
+            --title "阅读器测试版 $RELEASE_TAG" --notes-file release/notes.md
+          {
+            echo '### IPA 下载'
+            echo "[直接下载 IPA](https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/Legado-unsigned.ipa)"
+            echo "[Release 页面](https://github.com/${GH_REPO}/releases/tag/${RELEASE_TAG})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   preload-tests:
     runs-on: macos-15
     timeout-minutes: 15
