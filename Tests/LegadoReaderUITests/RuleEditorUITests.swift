@@ -251,17 +251,14 @@ final class RuleEditorUITests: XCTestCase {
         app.buttons["更多"].firstMatch.tap()
         app.buttons["新建书源"].tap()
         XCTAssertTrue(app.navigationBars["新建书源"].waitForExistence(timeout: 10))
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "书源名称")).firstMatch.tap()
+        let name = usesLegacyUI ? app.textViews["书源名称"] : app.textFields["source.field.bookSourceName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap(); name.typeText("UI Source")
+        XCTAssertEqual(name.value as? String, "UI Source")
+        let address = usesLegacyUI ? app.textViews["书源地址"] : app.textFields["source.field.bookSourceUrl"]
+        address.tap(); address.typeText("https://ui-editor.test")
+        XCTAssertEqual(address.value as? String, "https://ui-editor.test")
         let editor = app.textViews["syntaxCodeEditor"]
-        XCTAssertTrue(editor.waitForExistence(timeout: 5))
-        editor.tap(); editor.typeText("UI Source")
-        attach(app, name: "Typed source name")
-        XCTAssertEqual(editor.value as? String, "UI Source")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "书源地址")).firstMatch.tap()
-        editor.tap(); editor.typeText("https://ui-editor.test")
-        XCTAssertEqual(editor.value as? String, "https://ui-editor.test")
-        app.navigationBars.buttons.element(boundBy: 0).tap()
         app.segmentedControls.buttons["JSON"].tap()
         attach(app, name: "Source JSON editor")
         let json = editor.value as? String ?? ""

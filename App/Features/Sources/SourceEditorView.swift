@@ -55,20 +55,29 @@ struct SourceEditorView: View {
                         else {
                             Section(currentSection.title) {
                                 ForEach(currentSection.fields) { field in
-                                    NavigationLink {
-                                        RuleCodeFieldView(title: field.title, path: field.path, text: string(field.path),
-                                                          language: field.isJavaScript ? .javascript : .rule, help: field.help)
-                                    } label: {
-                                        VStack(alignment: .leading, spacing: 5) {
-                                            Text(field.title)
-                                            Text(document.value(at: field.path)?.stringValue.isEmpty == false ? document.value(at: field.path)!.stringValue : field.path)
-                                                .font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
+                                    if ["bookSourceName", "bookSourceUrl", "bookSourceGroup", "bookSourceComment"].contains(field.path) {
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text(field.title).font(.subheadline)
+                                            ReadingTextField(field.title, text: string(field.path), axis: .vertical)
+                                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                                .accessibilityIdentifier("source.field.\(field.path)")
+                                        }
+                                    } else {
+                                        NavigationLink {
+                                            RuleCodeFieldView(title: field.title, path: field.path, text: string(field.path),
+                                                              language: field.isJavaScript ? .javascript : .rule, help: field.help)
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 5) {
+                                                Text(field.title)
+                                                Text(document.value(at: field.path)?.stringValue.isEmpty == false ? document.value(at: field.path)!.stringValue : field.path)
+                                                    .font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
+                                            }
                                         }
                                     }
                                 }
                             }
                             Section {
-                                Text("点击字段可全屏编辑规则。支持 @css:、XPath、$. JSONPath、@js:、{{key}}、{{page}} 和 ## 替换语法。未识别的扩展字段保留在 JSON 中。")
+                                Text("点击规则字段可全屏编辑。支持 @css:、XPath、$. JSONPath、@js:、{{key}}、{{page}} 和 ## 替换语法。未识别的扩展字段保留在 JSON 中。")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
@@ -119,8 +128,9 @@ struct SourceEditorView: View {
             .alert("无法完成操作", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
                 Button("好", role: .cancel) {}
             } message: { Text(errorMessage ?? "") }
-            .confirmationDialog("放弃未保存的修改？", isPresented: $showsDiscard, titleVisibility: .visible) {
+            .alert("放弃未保存的修改？", isPresented: $showsDiscard) {
                 Button("放弃修改", role: .destructive) { dismiss() }
+                Button("继续编辑", role: .cancel) {}
             }
         }
         .interactiveDismissDisabled(isDirty || isSaving)
