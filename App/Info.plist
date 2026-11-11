@@ -2,8 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>LegadoCloudKitTeam</key>
+	<string>$(DEVELOPMENT_TEAM)</string>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<string>zh-Hans</string>
+	<key>CFBundleLocalizations</key>
+	<array><string>zh-Hans</string></array>
 	<key>CFBundleDisplayName</key>
 	<string>小浣熊阅读</string>
 	<key>CFBundleDocumentTypes</key>
@@ -76,7 +80,9 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>用于扫描书源和净化规则的导入二维码。</string>
+	<string>用于扫描书源、净化规则和朗读引擎的导入二维码。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于连接您配置的局域网书源和朗读服务。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>用于保存阅读页面中的图片到照片图库。</string>
 	<key>UIApplicationSceneManifest</key>

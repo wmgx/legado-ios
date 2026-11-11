@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct SourceManagementView: View {
     @EnvironmentObject private var library: SourceLibraryModel
+    @Environment(\.dismiss) private var dismiss
     @State private var showsImporter = false
     @State private var pickedImportFiles: [SourceImportFile] = []
     @State private var importPickerHasDismissed = true
@@ -12,6 +13,11 @@ struct SourceManagementView: View {
     @State private var showsTextImporter = false
     @State private var showsGroupManager = false
     @State private var showsBatchGroups = false
+    @State private var showsBatchTest = false
+    @State private var testSourceIDs: Set<String> = []
+    @State private var confirmsDelete = false
+    @State private var exportsFile = false
+    @State private var exportDocument = ConfigurationJSONDocument(data: Data("[]".utf8))
     @State private var selectedGroup: String?
     @State private var searchText = ""
     @State private var isSelecting = false
@@ -60,7 +66,7 @@ struct SourceManagementView: View {
                 } description: {
                     Text("新建书源，或从文件、链接、JSON、二维码导入。")
                 } actions: {
-                    Button("导入书源", action: presentFileImporter)
+                    Menu("添加书源") { addSourceActions }
                         .readingProminentButtonStyle()
                 }
             } else {
@@ -84,19 +90,23 @@ struct SourceManagementView: View {
                                         Image(systemName: selectedSourceIDs.contains(source.id) ? "checkmark.circle.fill" : "circle")
                                             .font(.title3)
                                             .foregroundStyle(selectedSourceIDs.contains(source.id) ? ReadingTheme.accent : .secondary)
-                                        SourceRow(source: source, showsToggle: false) { _ in }
+                                        SourceRow(source: source)
                                     }
+                                    .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                             } else {
                                 NavigationLink {
                                     SourceDetailView(source: source)
                                 } label: {
-                                    SourceRow(source: source) { enabled in
-                                        Task { await library.setEnabled(enabled, for: source.id) }
-                                    }
+                                    SourceRow(source: source)
+                                }
+                                .swipeActions(edge: .leading) {
+                                    Button(source.enabled ? "停用" : "启用") { Task { await library.setEnabled(!source.enabled, for: source.id) } }
+                                        .tint(source.enabled ? .orange : .green)
                                 }
                                 .contextMenu {
+                                    Button(source.enabled ? "停用" : "启用") { Task { await library.setEnabled(!source.enabled, for: source.id) } }
                                     NavigationLink {
                                         SearchView(fixedSource: source)
                                     } label: {
@@ -129,70 +139,87 @@ struct SourceManagementView: View {
                 }
             }
         }
-        .navigationTitle("书源")
+        .navigationTitle(isSelecting ? "已选 \(selectedSourceIDs.count) 项" : "书源")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .readingTabBarHidden()
         .background(ReadingTheme.groupedCanvas)
-        .searchable(text: $searchText, prompt: "名称、地址或分组")
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "名称、地址或分组")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button(isSelecting ? "完成" : "选择") {
-                    isSelecting.toggle()
-                    if !isSelecting { selectedSourceIDs.removeAll() }
+                if isSelecting {
+                    Button("取消") { isSelecting = false; selectedSourceIDs = [] }
+                } else {
+                    Button { dismiss() } label: { Image(systemName: "chevron.left") }.accessibilityLabel("返回")
                 }
-                .disabled(library.sources.isEmpty)
             }
-            ToolbarItem(placement: .primaryAction) {
-                Menu("更多", systemImage: "ellipsis.circle") {
-                    Button("新建书源", systemImage: "plus") { showsNewSource = true }
-                    Button("二维码导入", systemImage: "qrcode.viewfinder") { showsQRImporter = true }
-                    Button("从文件导入", systemImage: "doc.badge.plus", action: presentFileImporter)
-                    Button("URL 或粘贴 JSON", systemImage: "link.badge.plus") { showsTextImporter = true }
-                    Divider()
-                    NavigationLink {
-                        SourceBatchTestView()
-                    } label: {
-                        Label("测试书源", systemImage: "checkmark.circle.badge.questionmark")
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if isSelecting {
+                    Button(selectedSourceIDs.isSuperset(of: Set(filteredSources.map(\.id))) ? "取消全选" : "全选") {
+                        let visible = Set(filteredSources.map(\.id))
+                        if selectedSourceIDs.isSuperset(of: visible) { selectedSourceIDs.subtract(visible) }
+                        else { selectedSourceIDs.formUnion(visible) }
                     }
-                    Button("管理分组", systemImage: "folder.badge.gearshape") { showsGroupManager = true }
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu("排序", systemImage: "arrow.up.arrow.down") {
-                    Toggle("倒序", isOn: $sortDescending)
-                    Picker("排序方式", selection: $sortMode) {
-                        Text("手动排序").tag("manual")
-                        Text("自动排序").tag("weight")
-                        Text("按名称").tag("name")
-                        Text("按网址").tag("url")
-                        Text("按更新时间").tag("update")
-                        Text("按响应时间").tag("respond")
-                        Text("按启用状态").tag("enabled")
+                } else {
+                    Button("选择") { isSelecting = true }.disabled(library.sources.isEmpty)
+                    Menu("添加书源", systemImage: "plus") { addSourceActions }
+                    Menu("更多", systemImage: "ellipsis.circle") {
+                        Button("测试当前列表", systemImage: "checkmark.circle") { testSourceIDs = Set(filteredSources.map(\.id)); showsBatchTest = true }
+                        Menu("排序", systemImage: "arrow.up.arrow.down") {
+                            Toggle("倒序", isOn: $sortDescending)
+                            Picker("排序方式", selection: $sortMode) {
+                                Text("手动排序").tag("manual")
+                                Text("自动排序").tag("weight")
+                                Text("按名称").tag("name")
+                                Text("按网址").tag("url")
+                                Text("按更新时间").tag("update")
+                                Text("按响应时间").tag("respond")
+                                Text("按启用状态").tag("enabled")
+                            }
+                        }
+                        Button("管理分组", systemImage: "folder") { showsGroupManager = true }
+                        Button("导出全部书源", systemImage: "square.and.arrow.up") { exportSources(library.sources) }
                     }
                 }
             }
         }
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
-                HStack(spacing: 18) {
-                    Button(selectedSourceIDs.count == filteredSources.count ? "取消全选" : "全选") {
-                        if selectedSourceIDs.count == filteredSources.count { selectedSourceIDs.removeAll() }
-                        else { selectedSourceIDs = Set(filteredSources.map(\.id)) }
+                HStack {
+                    Button("测试") { testSourceIDs = selectedSourceIDs; showsBatchTest = true }
+                    Spacer()
+                    Menu("启停") {
+                        Button("启用所选") { Task { await library.setEnabled(true, for: selectedSourceIDs) } }
+                        Button("停用所选") { Task { await library.setEnabled(false, for: selectedSourceIDs) } }
                     }
                     Spacer()
-                    Button("分组", systemImage: "folder") { showsBatchGroups = true }
-                        .disabled(selectedSourceIDs.isEmpty)
-                    Button("启用", systemImage: "checkmark.circle") {
-                        Task { await library.setEnabled(true, for: selectedSourceIDs) }
-                    }
-                    .disabled(selectedSourceIDs.isEmpty)
-                    Button("停用", systemImage: "pause.circle") {
-                        Task { await library.setEnabled(false, for: selectedSourceIDs) }
-                    }
-                    .disabled(selectedSourceIDs.isEmpty)
+                    Button("分组") { showsBatchGroups = true }
+                    Spacer()
+                    Button("导出") { exportSources(library.sources.filter { selectedSourceIDs.contains($0.id) }) }
+                    Spacer()
+                    Button("删除", role: .destructive) { confirmsDelete = true }
                 }
+                .disabled(selectedSourceIDs.isEmpty)
                 .font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 18).padding(.vertical, 12)
+                .padding(.horizontal, 20).frame(minHeight: 54)
                 .background(.ultraThinMaterial)
             }
+        }
+        .alert("删除所选书源？", isPresented: $confirmsDelete) {
+            Button("取消", role: .cancel) {}
+            Button("删除 \(selectedSourceIDs.count) 个书源", role: .destructive) {
+                let ids = selectedSourceIDs
+                Task { await library.remove(sourceIDs: ids); if library.notice?.kind != .error { selectedSourceIDs.subtract(ids) } }
+            }
+        } message: { Text("将移除所选书源配置，书架中的书籍与已缓存正文会保留。") }
+        .sheet(isPresented: $showsBatchTest) {
+            ReadingNavigationStack {
+                SourceBatchTestView(sourceIDs: testSourceIDs).environmentObject(library)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { showsBatchTest = false } } }
+            }.readingFormPresentation()
+        }
+        .fileExporter(isPresented: $exportsFile, document: exportDocument, contentType: .json, defaultFilename: "bookSources") { result in
+            if case .failure(let error) = result { library.notice = .init(kind: .error, title: "导出失败", detail: error.localizedDescription) }
         }
         .sheet(isPresented: $showsNewSource) { SourceEditorView().environmentObject(library) }
         .sheet(isPresented: $showsQRImporter) {
@@ -220,6 +247,24 @@ struct SourceManagementView: View {
                 showsImporter = false
             }
         }
+    }
+
+    private func exportSources(_ sources: [BookSource]) {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            exportDocument = .init(data: try encoder.encode(sources))
+            exportsFile = true
+        } catch { library.notice = .init(kind: .error, title: "导出失败", detail: error.localizedDescription) }
+    }
+
+    @ViewBuilder
+    private var addSourceActions: some View {
+        Button("扫码添加", systemImage: "qrcode.viewfinder") { showsQRImporter = true }
+        Button("链接或 JSON", systemImage: "link") { showsTextImporter = true }
+        Button("从文件导入", systemImage: "doc", action: presentFileImporter)
+        Divider()
+        Button("手动编辑规则", systemImage: "curlybraces") { showsNewSource = true }
     }
 
     private func presentFileImporter() {
@@ -291,6 +336,11 @@ private struct SourceTextImportView: View {
                 .pickerStyle(.segmented)
 
                 Section(mode == 0 ? "书源 URL" : "书源 JSON") {
+                    Button("从剪贴板粘贴", systemImage: "doc.on.clipboard") {
+                        value = UIPasteboard.general.string ?? ""
+                        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                        mode = trimmed.hasPrefix("{") || trimmed.hasPrefix("[") ? 1 : 0
+                    }
                     if mode == 0 {
                         TextField("https://example.com/sources.json", text: $value)
                             .textInputAutocapitalization(.never)
@@ -329,39 +379,18 @@ private struct SourceTextImportView: View {
 
 private struct SourceRow: View {
     let source: BookSource
-    var showsToggle = true
-    let onEnabledChanged: @MainActor @Sendable (Bool) -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: source.enabled ? "network" : "network.slash")
-                .font(.system(size: 20))
-                .frame(width: 28)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(source.bookSourceName)
-                    .font(.body)
-                    .foregroundStyle(source.enabled ? Color.primary : .secondary)
-                Text(source.groups.isEmpty ? (URL(string: source.bookSourceUrl)?.host ?? source.bookSourceUrl) : source.groups.joined(separator: " · "))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text(source.bookSourceName).font(.body).lineLimit(2)
+                if !source.enabled { Text("已停用").font(.caption).foregroundStyle(.secondary) }
             }
-            Spacer()
-            if showsToggle {
-                Toggle("启用", isOn: Binding(
-                    get: { source.enabled },
-                    set: { enabled in
-                        Task { @MainActor in onEnabledChanged(enabled) }
-                    }
-                ))
-                .labelsHidden()
-                .tint(.green)
-                .accessibilityLabel("启用\(source.bookSourceName)")
-            }
+            Text(source.groups.isEmpty ? (URL(string: source.bookSourceUrl)?.host ?? source.bookSourceUrl) : source.groups.joined(separator: " · "))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
-        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
     }
 }
 
@@ -454,9 +483,7 @@ private struct SourceGroupContentsView: View {
                     NavigationLink {
                         SourceDetailView(source: source)
                     } label: {
-                        SourceRow(source: source) { enabled in
-                            Task { await library.setEnabled(enabled, for: source.id) }
-                        }
+                        SourceRow(source: source)
                     }
                 }
                 if sources.isEmpty {
@@ -636,7 +663,7 @@ struct SourceImportReviewView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
 
-                    Label("仅有效书源可被选择和导入", systemImage: "checkmark.shield.fill")
+                    Label("仅格式有效的书源可被选择和导入，实际可用性请在导入后测试", systemImage: "checkmark.shield.fill")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

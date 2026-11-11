@@ -2,12 +2,33 @@
 
 ## 环境
 
-- macOS；支持 Swift 6 的 Xcode，当前开发环境为 Xcode 26.1。
+- macOS；Xcode 16.2（Swift 6.0）或更新版本。
 - App 最低 iOS 15.0；核心包也可在 macOS 14+ 测试。
 - Swift Package Manager 依赖由 `Package.resolved` 锁定，初次解析需要网络。
 - 运行脚本需 Python 3 和 `rg`（ripgrep）。
 
+Xcode 工程将 Readium 的间接依赖 SQLite.swift 固定为 0.15.4，以兼容 Swift 6.0。升级依赖时需检查工具链要求。iOS 26 专用工具栏外观仅在 Xcode 26 及更新版本中启用；Xcode 16.2 构建使用兼容实现。
+
 在独立仓库根目录打开 `Legado.xcodeproj`，选择 `Legado` Scheme。真机运行需要自行设置签名团队；请勿将证书或描述文件提交到仓库。
+
+## iCloud 同步
+
+1. 在 Xcode 为 `Legado` Target 选择有 iCloud 权限的开发者团队和可用的 Bundle ID。Personal Team 或无签名构建不能验证 CloudKit。
+2. 在 Signing & Capabilities 中启用 iCloud / CloudKit，并关联 `iCloud.<Bundle ID>` 容器。工程的 entitlement 和客户端容器名均跟随 Bundle ID。
+3. 先用开发签名运行一次，在「我的 → 同步」开启 iCloud 同步。CloudKit 开发环境使用 `ReadingState` 和 `ReaderFile` 两种记录：前者保存配置与进度，后者保存文件 `file`（Asset）。配置记录字段为 `payload`（Bytes）、`payloadAsset`（Asset）、`modifiedAt`（Int64）和 `device`（String）。
+4. 发布前在 CloudKit Console 将开发环境 schema 部署到 Production，再用具有相同容器权限的正式签名验证。当前实现按 record ID 获取记录，不依赖自定义查询索引。
+
+同步范围包括书架与分组、本地 TXT / EPUB、阅读进度、书签和记录、书源、RSS 源、替换和 TXT 目录规则、订阅、HTTP TTS、编辑辅助、服务器配置、阅读设置、字体和背景。配置中填写的密钥或密码属于配置内容，会进入个人 iCloud；运行时 Cookie、登录会话、缓存和日志不上传。亮度保留在本机，字体与本地书籍路径在目标设备重新映射。
+
+应用在本机修改后及回到前台时同步，也提供「立即同步」。配置按条目修改时间合并，进度按书名与作者匹配并保留较新时间；首次加入设备的默认值不会覆盖云端设置。删除通过标记同步，远端移除书架条目时保留本地正文文件。文件按内容摘要校验，后台失败会保留本机待同步状态并重试。
+
+无签名模拟器只能验证合并、Unicode 位置及正文导入逻辑。跨设备验收应使用同一 Apple 账号的两台已签名设备，检查离线修改、删除、重新联网和本地文件还原；不能以本地测试通过替代 CloudKit 实测。
+
+## 双页与朗读
+
+iPad 横屏支持覆盖、滑动、仿真、滚动和无动画。覆盖和滑动以整屏双页一起运动，仿真围绕中缝翻动；滚动按双栏连续排版，旋转后保留阅读位置。双页中间区域唤起菜单，两侧边缘按点击设置翻页。菜单底部拖动的是本章进度，拖动时正文实时跟随，顶部与目录保留全书进度。
+
+TTS 参考 Android 阅读的[系统朗读](https://github.com/LegadoTeam/legado/blob/master/app/src/main/java/io/legado/app/service/TTSReadAloudService.kt)和[HTTP 朗读](https://github.com/LegadoTeam/legado/blob/master/app/src/main/java/io/legado/app/service/HttpReadAloudService.kt)服务。长文本按标点和 Unicode 字素边界分段，在线朗读限制后续段落与下一章开头的预取，暂停保留播放器位置，切段时忽略旧播放器回调。音频和会话错误会显示在阅读菜单中，提供重试；HTTP 文本错误与鉴权失败不会盲目重复请求。
 
 ## 代码结构
 

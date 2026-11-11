@@ -10,11 +10,22 @@ private struct ReaderPositionPreferenceKey: PreferenceKey {
     }
 }
 
+struct ReaderDarkAppearanceKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
 struct ReaderStylePreset: Identifiable {
     let id: String
     let name: String
     let background: UIColor
     let foreground: UIColor
+
+    var isDark: Bool {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        background.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return red * 0.2126 + green * 0.7152 + blue * 0.0722 < 0.45
+    }
 
     static let legadoDefaults: [ReaderStylePreset] = [
         .init(id: "wechat", name: "微信读书", background: UIColor(hex: 0xC0EDC6), foreground: UIColor(hex: 0x0B0B0B)),
@@ -74,6 +85,7 @@ enum ReaderBackgroundStore {
         }
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try encoded.write(to: target, options: .atomic)
+        if target == url { NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil) }
         return image
     }
 
@@ -92,7 +104,10 @@ enum ReaderBackgroundStore {
         return UIImage(cgImage: image)
     }
 
-    static func remove() { try? FileManager.default.removeItem(at: url) }
+    static func remove() {
+        try? FileManager.default.removeItem(at: url)
+        NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil)
+    }
 }
 
 enum ReaderFontStore {
@@ -113,6 +128,7 @@ enum ReaderFontStore {
         let target = directory.appendingPathComponent(source.lastPathComponent)
         if target != source {
             try data.write(to: target, options: .atomic)
+            NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil)
         }
         return target.path
     }

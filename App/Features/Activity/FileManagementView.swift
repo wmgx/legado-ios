@@ -111,7 +111,7 @@ struct FileManagementView: View {
             if !selecting {
                 Section {
                     NavigationLink { CacheManagementView() } label: {
-                        Label("章节缓存与空间清理", systemImage: "internaldrive")
+                        Label("存储空间", systemImage: "internaldrive")
                     }
                 }
             }

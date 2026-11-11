@@ -16,9 +16,17 @@ struct ReplaceRuleEditorView: View {
     @State private var isSaving = false
     @State private var showsDiscard = false
     private let original: ReplaceRule
+    private let onSaved: ((ReplaceRule) -> Void)?
 
-    init(rule: ReplaceRule, startsWithTest: Bool = false) {
+    init(rule: ReplaceRule, startsWithTest: Bool = false, sampleTitle: String? = nil,
+         sampleContent: String? = nil, bookName: String = "", sourceURL: String = "",
+         onSaved: ((ReplaceRule) -> Void)? = nil) {
         original = rule
+        self.onSaved = onSaved
+        _testTitle = State(initialValue: sampleTitle ?? "第一章 开始")
+        _testContent = State(initialValue: sampleContent ?? "在这里粘贴需要净化的正文。")
+        _testBook = State(initialValue: bookName)
+        _testSource = State(initialValue: sourceURL)
         _rule = State(initialValue: rule)
         _mode = State(initialValue: startsWithTest ? 1 : 0)
     }
@@ -57,7 +65,7 @@ struct ReplaceRuleEditorView: View {
                         Task {
                             let saved = await library.save(rule)
                             isSaving = false
-                            if saved { dismiss() }
+                            if saved { onSaved?(rule); dismiss() }
                             else {
                                 let message = library.notice?.detail ?? "保存失败"
                                 library.notice = nil

@@ -122,8 +122,10 @@ final class EPUBReaderModel: ObservableObject, EPUBNavigatorDelegate {
         }
     }
 
-    func go(toProgress progress: Double) async {
-        guard let navigator, let locator = await navigator.publication.locate(progression: progress) else { return }
+    func go(toChapterProgress progress: Double) async {
+        guard let navigator, var locator = location, progress.isFinite else { return }
+        locator.locations = .init(progression: min(max(progress, 0), 1))
+        locator.text = .init()
         _ = await navigator.go(to: locator)
     }
 
@@ -221,7 +223,7 @@ struct EPUBReaderView: View {
         .task {
             model.onLocationChanged = { locator, chapter in
                 guard !showsTextReader else { return }
-                if !isScrubbing { sliderProgress = locator.locations.totalProgression ?? 0 }
+                if !isScrubbing { sliderProgress = locator.locations.progression ?? 0 }
                 saveTask?.cancel()
                 saveTask = Task {
                     do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
@@ -278,8 +280,12 @@ struct EPUBReaderView: View {
                 .accessibilityLabel("返回书架")
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.book.name).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text(model.location?.title ?? model.currentChapter?.title ?? "EPUB")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                HStack {
+                    Text(model.location?.title ?? model.currentChapter?.title ?? "EPUB").lineLimit(1)
+                    Text("全书 \(Int(model.progress * 100))%")
+                        .fixedSize().monospacedDigit()
+                        .accessibilityLabel("全书进度")
+                }.font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             Menu {
@@ -299,10 +305,10 @@ struct EPUBReaderView: View {
 
     private var bottomBar: some View {
         VStack(spacing: 10) {
-            ReadingPreviewSlider(title: "进度", id: "阅读进度", value: $sliderProgress, range: 0...1,
+            ReadingPreviewSlider(title: "本章进度", id: "EPUB 本章进度", value: $sliderProgress, range: 0...1,
                                  format: { "\(Int($0 * 100))%" }, activeSlider: $activeSlider) { editing in
                 isScrubbing = editing
-                if !editing { Task { await model.go(toProgress: sliderProgress) } }
+                if !editing { Task { await model.go(toChapterProgress: sliderProgress) } }
             }
             HStack {
                 Button { Task { _ = await model.navigator?.goBackward() } } label: { Image(systemName: "chevron.left") }

@@ -140,6 +140,12 @@ final class BookLibraryModel: ObservableObject {
     func addOrUpdate(_ book: Book) async {
         var book = book
         if let existing = books.first(where: { $0.bookUrl == book.bookUrl }),
+           let read = existing.readConfig?.readChapterTitles, !read.isEmpty {
+            if book.readConfig == nil { book.readConfig = BookReadConfig() }
+            let merged = Set(read + (book.readConfig?.readChapterTitles ?? [])).sorted()
+            book.readConfig?.readChapterTitles = merged
+        }
+        if let existing = books.first(where: { $0.bookUrl == book.bookUrl }),
            existing.durChapterTime > book.durChapterTime {
             applyProgress(BookProgress(book: existing), to: &book)
         }
@@ -162,6 +168,12 @@ final class BookLibraryModel: ObservableObject {
     }
 
     func replace(oldBookURL: String, with book: Book) async {
+        var book = book
+        if let read = books.first(where: { $0.bookUrl == oldBookURL })?.readConfig?.readChapterTitles, !read.isEmpty {
+            if book.readConfig == nil { book.readConfig = BookReadConfig() }
+            let merged = Set(read + (book.readConfig?.readChapterTitles ?? [])).sorted()
+            book.readConfig?.readChapterTitles = merged
+        }
         guard books.contains(where: { $0.bookUrl == oldBookURL }) else {
             await addOrUpdate(book)
             return
@@ -174,7 +186,7 @@ final class BookLibraryModel: ObservableObject {
         }
     }
 
-    func updateProgress(for book: Book, chapter: BookChapter, position: Int = 0, epubLocation: String? = nil) async {
+    func updateProgress(for book: Book, chapter: BookChapter, position: Int = 0, epubLocation: String? = nil, markRead: Bool = true) async {
         guard let index = books.firstIndex(where: { $0.bookUrl == book.bookUrl }) else {
             var reading = book
             if epubLocation != nil, reading.readConfig == nil { reading.readConfig = BookReadConfig() }
@@ -188,7 +200,10 @@ final class BookLibraryModel: ObservableObject {
             return
         }
         var updated = books
-        if epubLocation != nil, updated[index].readConfig == nil { updated[index].readConfig = BookReadConfig() }
+        if updated[index].readConfig == nil { updated[index].readConfig = BookReadConfig() }
+        var read = updated[index].readConfig?.readChapterTitles ?? []
+        if markRead, !chapter.isVolume, !read.contains(chapter.title) { read.append(chapter.title) }
+        updated[index].readConfig?.readChapterTitles = read
         updated[index].readConfig?.epubLocation = epubLocation
         updated[index].durChapterIndex = chapter.index
         updated[index].durChapterTitle = chapter.title
@@ -206,6 +221,59 @@ final class BookLibraryModel: ObservableObject {
         book.durChapterTitle = progress.durChapterTitle
         book.durChapterPos = progress.durChapterPos
         book.durChapterTime = progress.durChapterTime
+    }
+
+    func applySyncedReadingState(progress: [String: BookProgress], configurations: [String: (expected: BookReadConfig?, value: BookReadConfig)]) async {
+        var resolved = progress
+        for (url, var position) in progress {
+            let chapters = (try? await chapterRepository.load(bookURL: url)) ?? []
+            if let title = position.durChapterTitle, let chapter = chapters.first(where: { $0.title == title && !$0.isVolume }) {
+                position.durChapterIndex = chapter.index
+                resolved[url] = position
+            } else if !chapters.isEmpty, !chapters.contains(where: { $0.index == position.durChapterIndex && !$0.isVolume }) {
+                resolved[url] = nil
+            }
+        }
+        var updated = books
+        for index in updated.indices {
+            let url = updated[index].bookUrl
+            if let change = configurations[url], updated[index].readConfig == change.expected {
+                var config = change.value
+                config.epubLocation = updated[index].readConfig?.epubLocation
+                config.readChapterTitles = Set((config.readChapterTitles ?? []) + (updated[index].readConfig?.readChapterTitles ?? [])).sorted()
+                updated[index].readConfig = config
+            }
+            if let position = resolved[url], position.durChapterTime > updated[index].durChapterTime {
+                applyProgress(position, to: &updated[index])
+            }
+        }
+        if updated != books { await persist(updated) }
+    }
+
+    func applySyncedGroups(_ values: [BookGroup]) async {
+        let sorted = values.sorted { $0.order == $1.order ? $0.id < $1.id : $0.order < $1.order }
+        if groups != sorted { await persistGroups(sorted) }
+    }
+
+    func removeSyncedBooks(_ urls: Set<String>) async {
+        // Removing a remote shelf entry leaves its local file available for reimport.
+        if !urls.isEmpty { await persist(books.filter { !urls.contains($0.bookUrl) }) }
+    }
+
+    func importSyncedBook(from url: URL, metadata: Book, replacing oldURL: String? = nil) async throws {
+        let stored = try await localFiles.importFile(from: url)
+        do {
+            let report = try await Task.detached { [localService] in try localService.openFile(at: stored) }.value
+            var book = metadata
+            book.bookUrl = stored.absoluteString
+            book.tocUrl = report.book.tocUrl
+            book.originName = stored.lastPathComponent
+            book.coverUrl = report.book.coverUrl
+            guard await persist(books.filter { $0.bookUrl != oldURL } + [book]) else { throw LocalFileError.saveFailed(errorMessage ?? "无法保存同步书籍") }
+        } catch {
+            if let staged = try? await localFiles.stageRemoval(stored) { try? await localFiles.finishRemoval(staged) }
+            throw error
+        }
     }
 
     func restoreLocalCover(for book: Book, dataURL: String) async {
@@ -381,6 +449,7 @@ final class BookLibraryModel: ObservableObject {
     private func cleanupRemovedBooks(_ urls: Set<String>) async {
         for url in urls where !books.contains(where: { $0.bookUrl == url }) {
             pendingProgress[url] = nil
+            BookDownloadModel.shared.pause(url)
             try? await chapterRepository.remove(bookURL: url)
         }
         persistPendingProgress()

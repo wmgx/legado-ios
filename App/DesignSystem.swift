@@ -197,27 +197,20 @@ enum ReadingTheme {
 
 struct ReadingPageHeader<Actions: View>: View {
     let title: String
-    let subtitle: String
     @ViewBuilder var actions: Actions
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 16) {
-                Text(title)
-                    .font(.largeTitle.bold())
-                    .foregroundStyle(ReadingTheme.ink)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer(minLength: 0)
-                HStack(spacing: 10) { actions }
-            }
-            Text(subtitle)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 16) {
+            Text(title)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(ReadingTheme.ink)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("page.header.\(title)")
+            Spacer(minLength: 0)
+            HStack(spacing: 10) { actions }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 24)
-        .padding(.top, 20)
-        .padding(.bottom, 28)
+        .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 16)
     }
 }
 

@@ -36,14 +36,15 @@ struct SourceCompatibilityTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["LEGADO_LIVE_READABILITY_AUDIT"] != nil))
     func liveSearchResultReadability() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["LEGADO_SOURCE_CATALOG"])
+        let title = ProcessInfo.processInfo.environment["LEGADO_LIVE_BOOK_NAME"] ?? "家父汉高祖"
         let imported = try BookSourceImporter().inspect(Data(contentsOf: URL(fileURLWithPath: path)))
         let sources = Dictionary(imported.sources.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }).values
             .filter { $0.enabled && $0.bookSourceType == 0 }
         let worker = Task { () -> [SearchBook] in
             var books: [SearchBook] = []
-            for await outcome in BookSearchService().searchOutcomes(keyword: "极道天魔", sources: Array(sources)) {
+            for await outcome in BookSearchService().searchOutcomes(keyword: title, sources: Array(sources)) {
                 guard !Task.isCancelled else { break }
-                books += outcome.books.filter { $0.name == "极道天魔" && $0.author.contains("滚开") }
+                books += outcome.books.filter { $0.name == title }
                 if books.count >= 24 { break }
             }
             return books
@@ -54,6 +55,7 @@ struct SourceCompatibilityTests {
         }
         let books = await worker.value
         deadline.cancel()
+        #expect(!books.isEmpty, "真实书源没有搜到《\(title)》")
         await withTaskGroup(of: String.self) { group in
             for book in books {
                 guard let source = sources.first(where: { $0.id == book.origin }) else { continue }
@@ -67,7 +69,7 @@ struct SourceCompatibilityTests {
                     let body = await service.loadContent(book: detail.book, chapter: chapter, source: source,
                                                          nextChapterURL: toc.chapters.dropFirst(chapter.index + 1).first(where: { !$0.isVolume })?.url)
                     let errors = body.diagnostics.filter { $0.severity == .error }.map { "\($0.code): \($0.message)" }
-                    return "READABILITY \(source.bookSourceName): \(toc.chapters.count) chapters, \(body.content.count) characters; \(errors)"
+                    return "READABILITY \(source.bookSourceName) [\(source.id)]: \(toc.chapters.count) chapters, \(body.content.count) characters; \(errors)"
                 }
             }
             for await result in group { print(result) }
@@ -86,7 +88,7 @@ struct SourceCompatibilityTests {
         let worker = Task { () -> [String: Double] in
             var times: [String: Double] = [:]
             var completed = 0
-            for await outcome in BookSearchService().searchOutcomes(keyword: "极道天魔", sources: sources) {
+            for await outcome in BookSearchService().searchOutcomes(keyword: "家父汉高祖", sources: sources) {
                 guard !Task.isCancelled else { break }
                 completed += 1
                 let elapsed = started.duration(to: .now)
@@ -95,7 +97,7 @@ struct SourceCompatibilityTests {
                     times["firstResultSeconds"] = seconds
                     print("Search benchmark first result: \(seconds)s, \(outcome.sourceID)")
                 }
-                if outcome.books.contains(where: { $0.name == "极道天魔" && $0.author == "滚开" }) {
+                if outcome.books.contains(where: { $0.name == "家父汉高祖" && $0.author == "历史系之狼" }) {
                     times["firstExactSeconds"] = seconds
                     print("Search benchmark exact result: \(seconds)s, \(outcome.sourceID)")
                     break
@@ -269,17 +271,18 @@ struct SourceCompatibilityTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["LEGADO_LIVE_SOURCE_ID"] != nil))
     func liveSearchToReading() async throws {
         let environment = ProcessInfo.processInfo.environment
+        let title = environment["LEGADO_LIVE_BOOK_NAME"] ?? "家父汉高祖"
         let path = try #require(environment["LEGADO_SOURCE_CATALOG"])
         let sourceID = try #require(environment["LEGADO_LIVE_SOURCE_ID"])
         let catalog = try BookSourceImporter().inspect(Data(contentsOf: URL(fileURLWithPath: path)))
         let source = try #require(catalog.sources.last { $0.id == sourceID })
-        let search = await BookSearchService().search(keyword: "极道天魔", page: 1, source: source)
+        let search = await BookSearchService().search(keyword: title, page: 1, source: source)
         for issue in search.diagnostics { print("Live search diagnostic: \(issue.code): \(issue.message)") }
         print("Live search: \(search.books.count) books")
-        let found = try #require(search.books.first { $0.name == "极道天魔" && $0.author == "滚开" })
+        let found = try #require(search.books.first { $0.name == title })
         let service = NetworkBookService()
         let detail = await service.loadDetail(searchBook: found, source: source)
-        #expect(detail.book.name == "极道天魔")
+        #expect(detail.book.name == title)
         let toc = await service.loadChapters(book: detail.book, source: source)
         #expect(toc.chapters.count > 2)
         for chapter in toc.chapters.prefix(2) {
@@ -305,11 +308,17 @@ struct SourceCompatibilityTests {
             current.durChapterTitle = toc.chapters[1].title
             current.durChapterPos = 120
             let switcher = BookSourceSwitchService(chapterRepository: InMemoryBookChapterRepository())
-            let candidates = await switcher.candidates(for: current, sources: [source, replacementSource])
-            let candidate = try #require(candidates.first { $0.book.author == "滚开" })
-            let switched = try #require(await switcher.prepareSwitch(current: current, candidate: candidate.book, source: replacementSource))
+            var verified: BookSourceSwitchReport?
+            for await update in await switcher.validatedCandidateUpdates(for: current, sources: [source, replacementSource]) {
+                if case let .checked(candidate, report) = update, candidate.book.author == found.author {
+                    verified = report
+                }
+            }
+            let switched = try #require(verified)
+            try await switcher.saveDirectory(for: switched)
             #expect(switched.book.origin == replacementID)
-            #expect(switched.exactChapterMatch)
+            let exactMatch = switched.exactChapterMatch
+            #expect(exactMatch)
             #expect(switched.book.durChapterPos == 120)
             let chapter = switched.chapters[switched.book.durChapterIndex]
             let body = await service.loadContent(book: switched.book, chapter: chapter, source: replacementSource)

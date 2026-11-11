@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ReadingStatisticsView: View {
     @EnvironmentObject private var activity: ReadingActivityModel
-    @ScaledMetric(relativeTo: .largeTitle) private var durationFontSize = 42
+    @ScaledMetric(relativeTo: .largeTitle) private var durationFontSize = 36
     @ScaledMetric(relativeTo: .caption2) private var chartHeight = 138
 
     private var statistics: ReadingStatistics { activity.statistics }
@@ -10,14 +10,14 @@ struct ReadingStatisticsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                ReadingPageHeader(title: "阅读统计", subtitle: "每一页，都算数") { EmptyView() }
+                ReadingPageHeader(title: "阅读统计") { EmptyView() }
                 VStack(spacing: 16) {
                     todayCard
                     overviewGrid
                     weeklyCard
                     historyLink
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.bottom, 32)
             }
         }
@@ -41,12 +41,9 @@ struct ReadingStatisticsView: View {
                 .readingNumericTransition()
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
-            Text(statistics.todayReadTime == 0 ? "今天还没有阅读记录" : "已记录今天的阅读时长")
-                .font(.caption)
-                .foregroundStyle(ReadingTheme.onAccent.opacity(0.65))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(24)
+        .padding(20)
         .background(ReadingTheme.emphasisSurface, in: RoundedRectangle(cornerRadius: 20))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("statistics.todayCard")

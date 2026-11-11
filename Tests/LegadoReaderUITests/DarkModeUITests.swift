@@ -23,7 +23,7 @@ final class DarkModeUITests: XCTestCase {
             "-readerTheme", "night", "-readerUseBackgroundImage", "NO",
             "-lineSpacingExtra", "12", "-pageAnim", "0"
         ])
-        XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 20))
         // Expand the sheet so the controls can be inspected without clipping.
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.48))
             .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)))
@@ -45,10 +45,10 @@ final class DarkModeUITests: XCTestCase {
         continueAfterFailure = false
         let app = launch(["-themeMode", "2"])
         XCTAssertTrue(app.tabBars.buttons["书架"].waitForExistence(timeout: 20))
-        for (tab, heading) in [("书架", "阅读，让时间有了形状"), ("发现", "下一本好书，在这里遇见"),
-                               ("统计", "每一页，都算数"), ("我的", "按照你的方式阅读")] {
+        for (tab, heading) in [("书架", "书架"), ("发现", "发现"),
+                               ("统计", "阅读统计"), ("我的", "我的")] {
             app.tabBars.buttons[tab].tap()
-            XCTAssertTrue(app.staticTexts[heading].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["page.header.\(heading)"].waitForExistence(timeout: 5))
             if tab == "统计" {
                 let today = app.otherElements["statistics.todayCard"]
                 XCTAssertTrue(today.waitForExistence(timeout: 5))
@@ -59,8 +59,8 @@ final class DarkModeUITests: XCTestCase {
         app.buttons["profile.globe"].tap()
         XCTAssertTrue(app.navigationBars["书源"].waitForExistence(timeout: 10))
         attach(app, name: "Dark source library")
-        app.buttons["更多"].firstMatch.tap()
-        app.buttons["新建书源"].tap()
+        app.buttons["添加书源"].firstMatch.tap()
+        app.buttons["手动编辑规则"].tap()
         XCTAssertTrue(app.navigationBars["新建书源"].waitForExistence(timeout: 10))
         let basic = app.buttons["基础"]
         try assertReadableDarkFill(basic, in: app)
@@ -95,20 +95,30 @@ final class DarkModeUITests: XCTestCase {
         let app = launch(["-uiDemoTab", "settings", "-themeMode", "2"])
         let routes: [(String, String, String?)] = [
             ("textformat.size", "阅读设置", nil),
-            ("waveform", "在线朗读引擎", "新建"),
+            ("waveform", "朗读设置", nil),
             ("bookmark", "书签", nil),
             ("clock", "阅读记录", nil),
             ("link", "规则订阅", "新建"),
             ("text.badge.checkmark", "净化规则", "新建规则"),
             ("list.bullet.rectangle", "TXT目录规则", "新建"),
             ("folder", "文件管理", nil),
-            ("gearshape", "其他设置", nil),
+            ("gearshape", "启动与书架", nil),
+            ("icloud", "同步", nil),
+            ("internaldrive", "存储空间", nil),
+            ("network", "网络设置", nil),
+            ("stethoscope", "帮助与诊断", nil),
             ("info.circle", "关于", nil)
         ]
         for (icon, title, create) in routes {
             let entry = app.buttons["profile.\(icon)"]
             scrollTo(entry, in: app)
             entry.tap()
+            if title == "阅读设置" {
+                XCTAssertTrue(app.staticTexts[title].waitForExistence(timeout: 10))
+                try captureDarkPage(app, name: "Management \(title)")
+                app.buttons["完成"].tap()
+                continue
+            }
             XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 10))
             try captureDarkPage(app, name: "Management \(title)")
             if let create {
@@ -120,16 +130,6 @@ final class DarkModeUITests: XCTestCase {
                     try captureDarkPage(app, name: "Rule test form")
                 }
                 app.buttons["取消"].tap()
-            }
-            if title == "其他设置" {
-                for (entry, destination) in [("网络与缓存设置", "网络与缓存"), ("章节缓存管理", "缓存管理"), ("日志与诊断", "日志与诊断")] {
-                    let link = app.buttons[entry]
-                    scrollTo(link, in: app)
-                    link.tap()
-                    XCTAssertTrue(app.navigationBars[destination].waitForExistence(timeout: 5))
-                    try captureDarkPage(app, name: "Settings \(destination)")
-                    app.navigationBars.firstMatch.buttons.element(boundBy: 0).tap()
-                }
             }
             if title == "关于" {
                 let license = app.buttons["开源许可"]
@@ -162,13 +162,14 @@ final class DarkModeUITests: XCTestCase {
         app.launchArguments = ["-uiDemo", "-uiDemoTab", "sources", "-themeMode", "2"]
         app.launch()
         XCTAssertTrue(app.navigationBars["书源"].waitForExistence(timeout: 10))
+        app.buttons["更多"].firstMatch.tap()
         app.buttons["排序"].tap()
         XCTAssertTrue(app.buttons["倒序"].waitForExistence(timeout: 5))
         try assertReadableDarkFill(app.buttons["倒序"], in: app)
         attach(app, name: "Source sorting menu")
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).tap()
-        app.buttons["更多"].firstMatch.tap()
-        app.buttons["URL 或粘贴 JSON"].tap()
+        app.buttons["添加书源"].firstMatch.tap()
+        app.buttons["链接或 JSON"].tap()
         XCTAssertTrue(app.buttons["取消"].waitForExistence(timeout: 5))
         try captureDarkPage(app, name: "Source text import")
     }
@@ -209,17 +210,18 @@ final class DarkModeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["目录"].waitForExistence(timeout: 15))
         try captureDarkPage(app, name: "Night reader menu")
         app.buttons["目录"].tap()
-        XCTAssertTrue(app.navigationBars["目录"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.otherElements["reader.toc.drawer"].waitForExistence(timeout: 5))
         try captureDarkPage(app, name: "Night table of contents")
         app.buttons["关闭"].tap()
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         app.buttons["设置"].tap()
-        XCTAssertTrue(app.navigationBars["阅读设置"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 5))
         try captureDarkPage(app, name: "Night reader settings")
+        app.segmentedControls.buttons["翻页"].tap()
         let click = app.buttons["点击区域设置"]
         scrollTo(click, in: app)
         click.tap()
-        XCTAssertTrue(app.navigationBars["点击区域设置"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["恢复等分"].waitForExistence(timeout: 5))
         try captureDarkPage(app, name: "Night click action grid")
     }
 
@@ -229,6 +231,7 @@ final class DarkModeUITests: XCTestCase {
         let app = launch(["-uiDemoTab", "settings"])
         let appearance = app.buttons["profile.appearance"]
         XCTAssertTrue(appearance.waitForExistence(timeout: 10))
+        scrollTo(appearance, in: app)
         appearance.tap()
         let system = app.buttons["跟随系统"]
         XCTAssertTrue(system.waitForExistence(timeout: 3))
@@ -240,7 +243,7 @@ final class DarkModeUITests: XCTestCase {
         for (choice, expectsDark) in [("深色", true), ("浅色", false), ("跟随系统", systemIsDark)] {
             appearance.tap()
             let option = app.buttons[choice]
-            if !option.waitForExistence(timeout: 2), app.buttons["外观"].exists { app.buttons["外观"].tap() }
+            if !option.waitForExistence(timeout: 2), app.buttons["应用外观"].exists { app.buttons["应用外观"].tap() }
             XCTAssertTrue(option.waitForExistence(timeout: 3))
             option.tap()
             let changed = expectation(for: NSPredicate(format: "value == %@", choice), evaluatedWith: appearance)
@@ -251,6 +254,31 @@ final class DarkModeUITests: XCTestCase {
             else { XCTAssertGreaterThan(median, 0.6) }
             attach(app, name: "Live appearance \(choice)")
         }
+    }
+
+    func testNetworkDraftCancellationPreservesSavedSettings() throws {
+        continueAfterFailure = false
+        let app = launch(["-uiDemoTab", "settings", "-themeMode", "2"])
+        let network = app.buttons["profile.network"]
+        XCTAssertTrue(app.scrollViews["profile.scroll"].waitForExistence(timeout: 10))
+        attach(app, name: "Settings reading and source sections")
+        scrollTo(network, in: app)
+        attach(app, name: "Settings application and data section")
+        network.tap()
+        let proxy = app.textFields["全局代理"]
+        XCTAssertTrue(proxy.waitForExistence(timeout: 10))
+        let original = proxy.value as? String
+        proxy.tap(); proxy.typeText("invalid-draft")
+        app.buttons["取消"].tap()
+        XCTAssertTrue(app.buttons["继续编辑"].waitForExistence(timeout: 5))
+        app.buttons["继续编辑"].tap()
+        XCTAssertTrue((proxy.value as? String ?? "").contains("invalid-draft"))
+        app.buttons["取消"].tap()
+        app.buttons["放弃修改"].tap()
+        XCTAssertTrue(network.waitForExistence(timeout: 5)); network.tap()
+        XCTAssertTrue(proxy.waitForExistence(timeout: 5))
+        XCTAssertEqual(proxy.value as? String, original)
+        attach(app, name: "Network draft discarded without saving")
     }
 
     private func scrollTo(_ element: XCUIElement, in app: XCUIApplication) {

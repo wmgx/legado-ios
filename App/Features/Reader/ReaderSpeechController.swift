@@ -3,6 +3,43 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct ReaderSpeechSegment: Sendable {
+    let text: String
+    let range: NSRange
+
+    static func split(_ text: String, maximumUTF16Length: Int = 1000, byParagraph: Bool = true) -> [Self] {
+        let source = text as NSString
+        let limit = max(maximumUTF16Length, 16)
+        let boundaries = CharacterSet(charactersIn: "。！？；.!?;，, \t")
+        var result: [Self] = []
+        var location = 0
+        while location < source.length {
+            let paragraph = byParagraph ? source.paragraphRange(for: NSRange(location: location, length: 0))
+                : NSRange(location: location, length: source.length - location)
+            let first = source.rangeOfCharacter(from: .whitespacesAndNewlines.inverted, range: paragraph)
+            if first.location != NSNotFound {
+                let last = source.rangeOfCharacter(from: .whitespacesAndNewlines.inverted, options: .backwards, range: paragraph)
+                let end = NSMaxRange(last)
+                var start = first.location
+                while start < end {
+                    var next = min(start + limit, end)
+                    if next < end {
+                        next = source.rangeOfComposedCharacterSequence(at: next).location
+                        if next <= start { next = NSMaxRange(source.rangeOfComposedCharacterSequence(at: start)) }
+                        let boundary = source.rangeOfCharacter(from: boundaries, options: .backwards, range: NSRange(location: start, length: next - start))
+                        if boundary.location != NSNotFound, boundary.location >= start + limit / 2 { next = NSMaxRange(boundary) }
+                    }
+                    let range = NSRange(location: start, length: next - start)
+                    result.append(.init(text: source.substring(with: range), range: range))
+                    start = next
+                }
+            }
+            location = NSMaxRange(paragraph)
+        }
+        return result
+    }
+}
+
 private final class IncrementalAudioResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
     private let queue = DispatchQueue(label: "io.legado.tts.stream-loader")
     private let contentType: String?
@@ -110,21 +147,30 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
     @Published private(set) var isPaused = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var completionCount = 0
-    @Published private(set) var currentSegmentIndex = 0
+    @Published private(set) var currentCharacterPosition = 0
+    @Published private(set) var isBuffering = false
+    private static weak var audioSessionOwner: ReaderSpeechController?
     private let synthesizer = AVSpeechSynthesizer()
     private let httpService = HttpTTSService()
     private var audioPlayer: AVAudioPlayer?
     private var streamPlayer: AVPlayer?
     private var streamLoader: IncrementalAudioResourceLoader?
     private var streamCompletionToken: NSObjectProtocol?
+    private var streamFailureToken: NSObjectProtocol?
+    private var streamStatus: NSKeyValueObservation?
+    private var streamPlaybackStatus: NSKeyValueObservation?
     private var httpTask: Task<Void, Never>?
-    private var httpPrefetchTasks: [Task<Void, Never>] = []
-    private var httpSegments: [String] = []
+    private var httpPrefetchTask: Task<Void, Never>?
+    private var nextChapterPrefetchTask: Task<Void, Never>?
+    private var prefetchedThrough = 0
+    private var sessionID = UUID()
+    private var httpSegments: [ReaderSpeechSegment] = []
     private var httpSegmentIndex = 0
     private var httpEngine: HttpTTS?
-    private var systemSegments: [String] = []
+    private var systemSegments: [ReaderSpeechSegment] = []
+    private var currentUtterance: AVSpeechUtterance?
     private var systemSegmentIndex = 0
-    private var segmentIndexOffset = 0
+    private var characterOffset = 0
     private var followsSystemRate = true
     private var speechRate = 5
     private var readByPage = false
@@ -134,7 +180,6 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
     private var notificationTokens: [NSObjectProtocol] = []
     nonisolated(unsafe) private var remoteCommandTargets: [(MPRemoteCommand, Any)] = []
     private var resumesAfterInterruption = false
-    private var isChangingSystemSegment = false
     private var ignoresAudioFocus = false
     private var pausesForPhoneCalls = false
     private var mediaButtonPerNext = false
@@ -174,32 +219,28 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
     }
 
     func stop() {
+        sessionID = UUID()
+        currentUtterance = nil
         synthesizer.stopSpeaking(at: .word)
-        audioPlayer?.stop()
-        audioPlayer = nil
-        streamPlayer?.pause()
-        streamLoader?.cancel()
-        streamPlayer = nil
-        streamLoader = nil
-        if let streamCompletionToken {
-            NotificationCenter.default.removeObserver(streamCompletionToken)
-            self.streamCompletionToken = nil
-        }
-        httpTask?.cancel()
-        httpTask = nil
-        httpPrefetchTasks.forEach { $0.cancel() }
-        httpPrefetchTasks.removeAll()
+        stopCurrentHTTPPlayback()
+        httpPrefetchTask?.cancel(); httpPrefetchTask = nil
+        nextChapterPrefetchTask?.cancel(); nextChapterPrefetchTask = nil
+        prefetchedThrough = 0
         httpSegments = []
         httpSegmentIndex = 0
         httpEngine = nil
         systemSegments = []
         systemSegmentIndex = 0
-        segmentIndexOffset = 0
+        characterOffset = 0
         continuesAcrossChapters = false
         isSpeaking = false
         isPaused = false
+        isBuffering = false
         updateNowPlaying()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if Self.audioSessionOwner === self {
+            Self.audioSessionOwner = nil
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     func configure(
@@ -228,10 +269,10 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         self.author = author
     }
 
-    func speak(_ text: String, continuesAcrossChapters: Bool = false, segmentIndexOffset: Int = 0) {
+    func speak(_ text: String, continuesAcrossChapters: Bool = false, characterOffset: Int = 0, startsPaused: Bool = false) {
         stop()
         errorMessage = nil
-        activateAudioSession()
+        guard activateAudioSession() else { return }
         self.continuesAcrossChapters = continuesAcrossChapters
         if synthesizer.isSpeaking || synthesizer.isPaused {
             synthesizer.stopSpeaking(at: .immediate)
@@ -240,33 +281,46 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         systemSegments = segments(for: text)
         guard !systemSegments.isEmpty else { return }
         systemSegmentIndex = 0
-        self.segmentIndexOffset = max(segmentIndexOffset, 0)
-        playCurrentSystemSegment()
+        self.characterOffset = max(characterOffset, 0)
+        currentCharacterPosition = self.characterOffset + systemSegments[0].range.location
+        if startsPaused { isPaused = true; updateNowPlaying() }
+        else { playCurrentSystemSegment() }
     }
 
     func speakHTTP(
         engine: HttpTTS,
         text: String,
         continuesAcrossChapters: Bool = false,
-        segmentIndexOffset: Int = 0
+        characterOffset: Int = 0,
+        startsPaused: Bool = false
     ) {
         stop()
         errorMessage = nil
-        activateAudioSession()
+        guard activateAudioSession() else { return }
         self.continuesAcrossChapters = continuesAcrossChapters
         httpEngine = engine
         httpSegments = segments(for: text)
         guard !httpSegments.isEmpty else { return }
         httpSegmentIndex = 0
-        self.segmentIndexOffset = max(segmentIndexOffset, 0)
-        isSpeaking = true
-        playCurrentHTTPSegment()
-        prefetchHTTP(engine: engine, texts: Array(httpSegments.dropFirst()))
+        self.characterOffset = max(characterOffset, 0)
+        currentCharacterPosition = self.characterOffset + httpSegments[0].range.location
+        if startsPaused { isPaused = true; updateNowPlaying() }
+        else { isSpeaking = true; playCurrentHTTPSegment() }
     }
 
     func prefetchHTTP(engine: HttpTTS, text: String, limit: Int = 10) {
-        let values = Array(segments(for: text).prefix(max(limit, 0)))
-        prefetchHTTP(engine: engine, texts: values)
+        guard httpEngine?.id == engine.id, isSpeaking || isPaused else { return }
+        nextChapterPrefetchTask?.cancel()
+        let values = Array(segments(for: text).prefix(min(max(limit, 0), 3)))
+        let session = sessionID
+        let rate = followsSystemRate ? 10 : speechRate + 5
+        nextChapterPrefetchTask = Task { [weak self] in
+            guard let self else { return }
+            for segment in values {
+                guard !Task.isCancelled, sessionID == session else { return }
+                _ = try? await httpService.audio(engine: engine, text: segment.text, speechRate: rate)
+            }
+        }
     }
 
     func pauseOrResume(text: String, continuesAcrossChapters: Bool = false) {
@@ -280,30 +334,25 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
     }
 
     func pauseOrResumeHTTP(engine: HttpTTS, text: String, continuesAcrossChapters: Bool = false) {
-        if audioPlayer != nil {
-            pauseOrResume(text: text, continuesAcrossChapters: continuesAcrossChapters)
-        } else if isSpeaking {
-            httpTask?.cancel()
-            isSpeaking = false
-            isPaused = true
-        } else if isPaused, httpEngine != nil {
-            isPaused = false
-            isSpeaking = true
-            playCurrentHTTPSegment()
-        } else {
+        if isPaused { resumePlayback() }
+        else if isSpeaking { pausePlayback() }
+        else {
             speakHTTP(engine: engine, text: text, continuesAcrossChapters: continuesAcrossChapters)
         }
     }
 
-    private func segments(for text: String) -> [String] {
-        let values = readByPage ? [text] : text.components(separatedBy: .newlines)
-        return values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    private func segments(for text: String) -> [ReaderSpeechSegment] {
+        ReaderSpeechSegment.split(text, byParagraph: !readByPage)
     }
 
-    private func activateAudioSession() {
+    private func activateAudioSession() -> Bool {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio, options: ignoresAudioFocus ? [.mixWithOthers] : [])
-        try? session.setActive(true)
+        do {
+            try session.setCategory(.playback, mode: .spokenAudio, options: ignoresAudioFocus ? [.mixWithOthers] : [])
+            try session.setActive(true)
+            Self.audioSessionOwner = self
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
     }
 
     private func pausePlayback() {
@@ -311,7 +360,7 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
             audioPlayer.pause()
         } else if let streamPlayer {
             streamPlayer.pause()
-        } else if synthesizer.isSpeaking {
+        } else if !systemSegments.isEmpty {
             synthesizer.pauseSpeaking(at: .word)
         } else if httpTask != nil {
             httpTask?.cancel()
@@ -321,11 +370,12 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         }
         isPaused = true
         isSpeaking = false
+        isBuffering = false
         updateNowPlaying()
     }
 
     private func resumePlayback() {
-        activateAudioSession()
+        guard activateAudioSession() else { return }
         if let audioPlayer {
             isSpeaking = audioPlayer.play()
         } else if let streamPlayer {
@@ -334,6 +384,10 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         } else if synthesizer.isPaused {
             synthesizer.continueSpeaking()
             isSpeaking = true
+        } else if currentUtterance != nil {
+            isSpeaking = true
+        } else if systemSegments.indices.contains(systemSegmentIndex) {
+            playCurrentSystemSegment()
         } else if httpEngine != nil, httpSegments.indices.contains(httpSegmentIndex) {
             isSpeaking = true
             playCurrentHTTPSegment()
@@ -437,7 +491,8 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
             finishNaturally()
             return
         }
-        let utterance = AVSpeechUtterance(string: systemSegments[systemSegmentIndex])
+        let segment = systemSegments[systemSegmentIndex]
+        let utterance = AVSpeechUtterance(string: segment.text)
         utterance.voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier)
             ?? AVSpeechSynthesisVoice(language: "zh-CN")
         let multiplier = followsSystemRate ? 1 : Float(speechRate + 5) / 10
@@ -446,8 +501,12 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
             AVSpeechUtteranceMaximumSpeechRate
         )
         utterance.pitchMultiplier = 1
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiMuteSpeech") { utterance.volume = 0 }
+        #endif
+        currentUtterance = utterance
         synthesizer.speak(utterance)
-        currentSegmentIndex = segmentIndexOffset + systemSegmentIndex
+        currentCharacterPosition = characterOffset + segment.range.location
         isSpeaking = true
         isPaused = false
         updateNowPlaying()
@@ -488,20 +547,22 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         streamLoader?.cancel()
         streamPlayer = nil
         streamLoader = nil
+        streamStatus = nil
+        streamPlaybackStatus = nil
         if let streamCompletionToken {
             NotificationCenter.default.removeObserver(streamCompletionToken)
             self.streamCompletionToken = nil
         }
+        if let streamFailureToken { NotificationCenter.default.removeObserver(streamFailureToken); self.streamFailureToken = nil }
         httpTask?.cancel()
         httpTask = nil
     }
 
     private func changeSystemSegment(to index: Int) {
-        isChangingSystemSegment = true
+        currentUtterance = nil
         synthesizer.stopSpeaking(at: .immediate)
         systemSegmentIndex = index
         playCurrentSystemSegment()
-        DispatchQueue.main.async { [weak self] in self?.isChangingSystemSegment = false }
     }
 
     private func updateNowPlaying() {
@@ -522,16 +583,20 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
             stop()
             return
         }
-        let text = httpSegments[httpSegmentIndex]
-        currentSegmentIndex = segmentIndexOffset + httpSegmentIndex
-        let rate = speechRate + 5
-        httpTask?.cancel()
+        let segment = httpSegments[httpSegmentIndex]
+        let text = segment.text
+        stopCurrentHTTPPlayback()
+        currentCharacterPosition = characterOffset + segment.range.location
+        let rate = followsSystemRate ? 10 : speechRate + 5
+        let session = sessionID
+        isSpeaking = true; isPaused = false; isBuffering = true
         httpTask = Task { [weak self] in
             guard let self else { return }
             do {
                 if streamsHTTPAudio {
                     let stream = try await httpService.audioStream(engine: engine, text: text, speechRate: rate)
                     try Task.checkCancellation()
+                    guard sessionID == session else { return }
                     if stream.isIncremental, stream.expectedContentLength ?? 0 > 0 {
                         playIncrementalHTTPStream(stream)
                     } else {
@@ -546,19 +611,25 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
                     try playBufferedHTTPAudio(audio.data)
                 }
                 isPaused = false
+                isBuffering = false
                 updateNowPlaying()
                 if !isSpeaking { throw CocoaError(.fileReadCorruptFile) }
             } catch is CancellationError {
                 return
             } catch {
+                guard sessionID == session, !Task.isCancelled else { return }
                 errorMessage = error.localizedDescription
                 stop()
             }
         }
+        scheduleHTTPPrefetch()
     }
 
     private func playBufferedHTTPAudio(_ data: Data) throws {
         let player = try AVAudioPlayer(data: data)
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiMuteSpeech") { player.volume = 0 }
+        #endif
         player.delegate = self
         player.prepareToPlay()
         audioPlayer = player
@@ -572,14 +643,37 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         loader.install(on: asset)
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-uiMuteSpeech") { player.isMuted = true }
+        #endif
         streamLoader = loader
         streamPlayer = player
+        let identity = ObjectIdentifier(item)
         streamCompletionToken = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: item,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.incrementalPlayerDidFinish() }
+            Task { @MainActor in
+                guard let self, let current = self.streamPlayer?.currentItem, ObjectIdentifier(current) == identity else { return }
+                self.incrementalPlayerDidFinish()
+            }
+        }
+        streamFailureToken = NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] note in
+            let message = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?.localizedDescription ?? "在线朗读播放失败"
+            Task { @MainActor in self?.streamFailed(identity: identity, message: message) }
+        }
+        streamStatus = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            let message = item.error?.localizedDescription ?? "在线音频无法播放"
+            Task { @MainActor in self?.streamFailed(identity: identity, message: message) }
+        }
+        streamPlaybackStatus = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
+            let waiting = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            Task { @MainActor in
+                guard let self, let current = self.streamPlayer?.currentItem, ObjectIdentifier(current) == identity else { return }
+                self.isBuffering = waiting && !self.isPaused
+            }
         }
         player.play()
         isSpeaking = true
@@ -592,20 +686,35 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         else { finishNaturally() }
     }
 
-    private func prefetchHTTP(engine: HttpTTS, texts: [String]) {
-        guard !texts.isEmpty else { return }
-        let rate = speechRate + 5
-        let task = Task { [weak self] in
+    private func streamFailed(identity: ObjectIdentifier, message: String) {
+        guard let current = streamPlayer?.currentItem, ObjectIdentifier(current) == identity else { return }
+        errorMessage = message
+        stop()
+    }
+
+    private func scheduleHTTPPrefetch() {
+        guard httpPrefetchTask == nil, let engine = httpEngine else { return }
+        let start = max(httpSegmentIndex + 1, prefetchedThrough + 1)
+        guard start < httpSegments.count else { return }
+        let rate = followsSystemRate ? 10 : speechRate + 5
+        let session = sessionID
+        httpPrefetchTask = Task { [weak self] in
             guard let self else { return }
-            for text in texts {
-                guard !Task.isCancelled else { return }
-                _ = try? await self.httpService.audio(engine: engine, text: text, speechRate: rate)
+            defer { if sessionID == session { httpPrefetchTask = nil } }
+            var index = start
+            while index < httpSegments.count, index <= httpSegmentIndex + 3 {
+                guard !Task.isCancelled, sessionID == session else { return }
+                let text = httpSegments[index].text
+                _ = try? await httpService.audio(engine: engine, text: text, speechRate: rate)
+                guard !Task.isCancelled, sessionID == session else { return }
+                prefetchedThrough = max(prefetchedThrough, index)
+                index += 1
             }
         }
-        httpPrefetchTasks.append(task)
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard player === audioPlayer else { return }
         audioPlayer = nil
         guard flag else {
             errorMessage = "HTTP TTS 音频播放失败"
@@ -620,6 +729,12 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
         }
     }
 
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        guard player === audioPlayer else { return }
+        errorMessage = error?.localizedDescription ?? "在线朗读音频无法解码"
+        stop()
+    }
+
     private func finishNaturally() {
         let shouldContinue = continuesAcrossChapters
         stop()
@@ -627,14 +742,19 @@ final class ReaderSpeechController: NSObject, ObservableObject, @preconcurrency 
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        guard !isChangingSystemSegment else { return }
+        guard utterance === currentUtterance else { return }
         systemSegmentIndex += 1
         if systemSegmentIndex < systemSegments.count { playCurrentSystemSegment() }
         else { finishNaturally() }
     }
 
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        guard utterance === currentUtterance else { return }
+        if isPaused { synthesizer.pauseSpeaking(at: .immediate) }
+    }
+
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        guard !isChangingSystemSegment else { return }
+        guard utterance === currentUtterance else { return }
         guard !synthesizer.isSpeaking else { return }
         isSpeaking = false
         isPaused = false

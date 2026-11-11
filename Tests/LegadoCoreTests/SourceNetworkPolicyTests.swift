@@ -326,6 +326,59 @@ struct SourceNetworkPolicyTests {
         #expect(snapshot.response.error?.legadoCode == -7)
     }
 
+    @Test func httpTTSServiceTemplateAndImportPreserveTextAndProtocol() throws {
+        let engine = try HttpTTS.openAICompatible(id: 987654, name: "Home", address: "http://192.168.31.251:20001/v1/")
+        #expect(engine.openAIServiceAddress == "http://192.168.31.251:20001/v1/audio/speech")
+        let domain = try HttpTTS.openAICompatible(id: 7, name: "服务", address: "tts.example.com")
+        #expect(domain.openAIServiceAddress == "https://tts.example.com/v1/audio/speech")
+        var customized = domain
+        customized.url += "\n// 自定义规则"
+        let updated = try customized.updatingOpenAIServiceAddress("other.example")
+        #expect(updated.openAIServiceAddress == "https://other.example/v1/audio/speech")
+        #expect(updated.url.hasSuffix("\n// 自定义规则"))
+        #expect(updated.header == customized.header)
+        let text = "“汾阴侯这么急着见朕”\n\"引号\"和\\斜线"
+        let request = try LegadoURLBuilder().prepare(engine.url, context: .init(variables: ["speakText": text, "speakSpeed": "15"], source: engine.bookSourceAdapter))
+        #expect(request.url.absoluteString == "http://192.168.31.251:20001/v1/audio/speech")
+        let requestBody = try #require(request.body)
+        let body = try #require(try JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
+        #expect(body["input"] as? String == text)
+        #expect(body["speed"] as? Double == 1.5)
+        let data = try JSONEncoder().encode([engine, engine, HttpTTS(id: 987655, name: "参数调节说明", url: "")])
+        let report = try HttpTTS.inspectImport(data)
+        #expect(report.engines.count == 1)
+        #expect(report.notes.map(\.name) == ["参数调节说明"])
+        var link = URLComponents(string: "legado://import/httpTTS")!
+        link.queryItems = [.init(name: "src", value: String(decoding: data, as: UTF8.self))]
+        #expect(try RuleImportInput.parse(link.string!, kind: "httpTTS") == .json(String(decoding: data, as: UTF8.self)))
+        #expect(throws: (any Error).self) { try HttpTTS.decodeImport(Data(#"{"bookSourceName":"书源","bookSourceUrl":"https://test"}"#.utf8)) }
+        #expect(throws: (any Error).self) { try HttpTTS.openAICompatible(id: 1, name: "错误", address: "file:///etc/passwd") }
+        if let path = ProcessInfo.processInfo.environment["LEGADO_LIVE_TTS_FIXTURE"] {
+            let collection = try HttpTTS.inspectImport(Data(contentsOf: URL(fileURLWithPath: path)))
+            #expect(collection.engines.count == 55)
+            #expect(collection.notes.count == 1)
+            for value in collection.engines {
+                let request = try LegadoURLBuilder().prepare(value.url, context: .init(variables: ["speakText": text, "speakSpeed": "10"], source: value.bookSourceAdapter))
+                #expect(!request.url.absoluteString.contains("{{"))
+            }
+            print("[Live TTS] 856adf0e: 55 request rules rendered; 1 documentation item preserved.")
+        }
+    }
+
+    @Test func httpTTSLoadsChineseVoicesWithCredentialsAndRejectsUnauthorizedService() async throws {
+        let url = try #require(URL(string: "https://tts.example/v1/voices?language=zh-CN"))
+        let success = HTTPResponse(data: Data(#"{"voices":[{"name":"zh-CN-XiaoxiaoNeural","language":"zh-CN","gender":"Female"}]}"#.utf8), statusCode: 200, headers: [:], finalURL: url)
+        let failure = HTTPResponse(data: Data(), statusCode: 401, headers: [:], finalURL: url)
+        let transport = RecordingPolicyTransport(results: [.success(success), .success(failure)])
+        let service = HttpTTSService(transport: transport)
+        let voices = try await service.voices(address: "tts.example", apiKey: "test-key")
+        #expect(voices.map(\.id) == ["zh-CN-XiaoxiaoNeural"])
+        let request = try #require(await transport.requests().first)
+        #expect(request.url == url)
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        await #expect(throws: HTTPClientError.self) { _ = try await service.voices(address: "tts.example", apiKey: "wrong-key") }
+    }
+
     @Test func httpTTSRendersSpeakVariablesAndReturnsBinaryAudio() async throws {
         let url = try #require(URL(string: "https://tts.example/audio"))
         let audio = Data([0x52, 0x49, 0x46, 0x46])
@@ -387,18 +440,21 @@ struct SourceNetworkPolicyTests {
 
     @Test func httpTTSCacheSeparatesEnginesAndInvalidatesEditedVoiceConfiguration() async throws {
         let url = try #require(URL(string: "https://tts.example/shared"))
-        let transport = RecordingPolicyTransport(results: ["first", "second", "edited"].map {
+        let transport = RecordingPolicyTransport(results: ["first", "second", "edited", "voice-changed"].map {
             .success(.init(data: Data($0.utf8), statusCode: 200, headers: ["Content-Type": "audio/mpeg"], finalURL: url))
         })
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let service = HttpTTSService(networkPolicy: .init(), transport: transport, cache: .init(directory: directory))
-        var engine = HttpTTS(id: 1, name: "声音一", url: url.absoluteString)
+        var engine = HttpTTS(id: 987321, name: "声音一", url: url.absoluteString)
         engine.header = #"{"X-Voice":"first"}"#
         let first = try await service.audio(engine: engine, text: "相同正文", speechRate: 5)
-        engine.id = 2
+        engine.id = 987322
+        let runtime = BookSourceRuntimeStore.shared
+        runtime.put(sourceID: engine.sourceKey, key: "loginInfo", value: "")
+        defer { runtime.put(sourceID: engine.sourceKey, key: "loginInfo", value: "") }
         let second = try await service.audio(engine: engine, text: "相同正文", speechRate: 5)
-        engine.header = #"{"X-Voice":"edited"}"#
+        engine.header = #"@js:JSON.stringify({"X-Voice":source.getLoginInfoMap().get("voice") || "edited"})"#
         let edited = try await service.audio(engine: engine, text: "相同正文", speechRate: 5)
         let cached = try await service.audio(engine: engine, text: "相同正文", speechRate: 5)
         #expect(first.data == Data("first".utf8))
@@ -406,6 +462,11 @@ struct SourceNetworkPolicyTests {
         #expect(edited.data == Data("edited".utf8))
         #expect(cached.data == edited.data)
         #expect(await transport.requests().count == 3)
+        runtime.put(sourceID: engine.sourceKey, key: "loginInfo", value: #"{"voice":"another-voice"}"#)
+        let changed = try await service.audio(engine: engine, text: "相同正文", speechRate: 5)
+        #expect(changed.data == Data("voice-changed".utf8))
+        #expect(await transport.requests().count == 4)
+        #expect(await transport.requests().last?.value(forHTTPHeaderField: "X-Voice") == "another-voice")
     }
 
     @Test func httpTTSDecodesDefaultsWithMissingFieldsAndLoginUIArray() throws {
@@ -437,7 +498,17 @@ struct SourceNetworkPolicyTests {
                 cache: cache
             ).audio(engine: engine, text: "测试", speechRate: 5)
         }
-        #expect(await transport.requests().count == 6)
+        #expect(await transport.requests().count == 1)
+        let errorBody = Data(#"{"err_no":502,"err_msg":"Error sk auth."}"#.utf8)
+        let stream = RecordingStreamingTransport(url: url, chunks: [errorBody.prefix(12), errorBody.dropFirst(12)], contentType: "application/json")
+        do {
+            _ = try await HttpTTSService(networkPolicy: .init(), transport: stream, cache: cache)
+                .audioStream(engine: engine, text: "流式错误", speechRate: 10)
+            Issue.record("错误 JSON 不应作为音频播放")
+        } catch {
+            #expect(error.localizedDescription == "朗读服务鉴权失败，请更新声源或检查凭据（Error sk auth.）")
+        }
+        #expect(await stream.requestCount() == 1)
     }
 
     @Test func httpTTSRebuildsRequestWhenLoginCheckInitializesURL() async throws {
@@ -490,11 +561,13 @@ private actor RecordingPolicyTransport: HTTPTransport {
 private actor RecordingStreamingTransport: StreamingHTTPTransport {
     let url: URL
     let values: [Data]
+    let contentType: String
     private var count = 0
 
-    init(url: URL, chunks: [Data]) {
+    init(url: URL, chunks: [Data], contentType: String = "audio/mpeg") {
         self.url = url
         values = chunks
+        self.contentType = contentType
     }
 
     func data(for request: URLRequest) async throws -> HTTPResponse {
@@ -502,7 +575,7 @@ private actor RecordingStreamingTransport: StreamingHTTPTransport {
         return .init(
             data: values.reduce(into: Data()) { $0.append($1) },
             statusCode: 200,
-            headers: ["Content-Type": "audio/mpeg"],
+            headers: ["Content-Type": contentType],
             finalURL: url
         )
     }
@@ -512,7 +585,7 @@ private actor RecordingStreamingTransport: StreamingHTTPTransport {
         let chunks = values
         return .init(
             statusCode: 200,
-            headers: ["Content-Type": "audio/mpeg"],
+            headers: ["Content-Type": contentType],
             finalURL: url,
             expectedContentLength: Int64(chunks.reduce(0) { $0 + $1.count }),
             chunks: AsyncThrowingStream { continuation in

@@ -6,6 +6,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C1C10D000000000000000001 /* ICloudSyncModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1C10D000000000000000002 /* ICloudSyncModel.swift */; };
 		DA1000000000000000000002 /* AppearanceContrastTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA2000000000000000000002; };
 		DA1000000000000000000001 /* DarkModeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA2000000000000000000001; };
 		B10000000000000000000050 = {isa = PBXBuildFile; fileRef = B20000000000000000000050; };
@@ -134,9 +135,12 @@
         ED1000000000000000000001 /* EPUBReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2000000000000000000001; };
         ED1000000000000000000002 /* Readium-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = ED2000000000000000000002; };
         ED1000000000000000000003 /* EPUBReaderIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2000000000000000000003; };
+		EA1100000000000000000001 = {isa = PBXBuildFile; fileRef = EA1200000000000000000001; };
+		EA1100000000000000000002 = {isa = PBXBuildFile; fileRef = EA1200000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C1C10D000000000000000002 /* ICloudSyncModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudSyncModel.swift; sourceTree = "<group>"; };
 		DA2000000000000000000002 /* AppearanceContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderTests/AppearanceContrastTests.swift; sourceTree = SOURCE_ROOT; };
 		DA2000000000000000000001 /* DarkModeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderUITests/DarkModeUITests.swift; sourceTree = SOURCE_ROOT; };
 		B20000000000000000000050 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderUITests/ReaderScrollGestureTests.swift; sourceTree = SOURCE_ROOT; };
@@ -263,6 +267,8 @@
         ED2000000000000000000001 /* EPUBReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBReaderView.swift; sourceTree = "<group>"; };
         ED2000000000000000000002 /* Readium-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Readium-LICENSE.txt"; sourceTree = "<group>"; };
         ED2000000000000000000003 /* EPUBReaderIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/LegadoReaderTests/EPUBReaderIntegrationTests.swift; sourceTree = SOURCE_ROOT; };
+		EA1200000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookDownloadModel.swift; sourceTree = "<group>"; };
+		EA1200000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookDownloadView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -357,6 +363,8 @@
 			children = (
 				A20000000000000000000007 /* BookLibraryModel.swift */,
 				B20000000000000000000028 /* BookDetailViewModel.swift */,
+				EA1200000000000000000002,
+				EA1200000000000000000001,
 				B20000000000000000000027 /* BookshelfReadViewModel.swift */,
 				A20000000000000000000008 /* BookDetailView.swift */,
 				A20000000000000000000015 /* SourceSwitchView.swift */,
@@ -605,6 +613,7 @@
 				E20000000000000000000005 /* DiagnosticLogView.swift */,
 				E20000000000000000000006 /* AboutView.swift */,
 				E20000000000000000000007 /* AppDiagnostics.swift */,
+				C1C10D000000000000000002 /* ICloudSyncModel.swift */,
 			);
 			path = Features/Settings;
 			sourceTree = "<group>";
@@ -693,6 +702,7 @@
 				F30000000000000000000002 /* XCRemoteSwiftPackageReference "Kanna" */,
 				F30000000000000000000003 /* ZIPFoundation */,
                 F30000000000000000000004 /* Readium */,
+                F30000000000000000000005 /* SQLite.swift */,
 			);
 			productRefGroup = D40000000000000000000002 /* Products */;
 			projectDirPath = "";
@@ -736,6 +746,7 @@
 				910000000000000000000006 /* AboutView.swift in Sources */,
 				910000000000000000000005 /* DiagnosticLogView.swift in Sources */,
 				910000000000000000000004 /* OtherSettingsView.swift in Sources */,
+				C1C10D000000000000000001 /* ICloudSyncModel.swift in Sources */,
 				910000000000000000000003 /* DiagnosticLog.swift in Sources */,
 				910000000000000000000002 /* HostsHTTPTransport.swift in Sources */,
 				910000000000000000000001 /* ApplicationSettings.swift in Sources */,
@@ -746,6 +757,8 @@
 				A10000000000000000000005 /* SearchViewModel.swift in Sources */,
 				A10000000000000000000006 /* BookLibraryModel.swift in Sources */,
 				B10000000000000000000028 /* BookDetailViewModel.swift in Sources */,
+				EA1100000000000000000002,
+				EA1100000000000000000001,
 				B10000000000000000000027 /* BookshelfReadViewModel.swift in Sources */,
 				A10000000000000000000007 /* BookDetailView.swift in Sources */,
 				A10000000000000000000008 /* ReaderView.swift in Sources */,
@@ -908,6 +921,7 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = App/Legado.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.14;
 				OTHER_LDFLAGS = "$(inherited) -lsqlite3";
@@ -928,6 +942,7 @@
 				CURRENT_PROJECT_VERSION = 20;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = App/Legado.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 0.1.14;
 				OTHER_LDFLAGS = "$(inherited) -lsqlite3";
@@ -982,6 +997,12 @@
             isa = XCRemoteSwiftPackageReference;
             repositoryURL = "https://github.com/readium/swift-toolkit.git";
             requirement = { kind = exactVersion; version = 3.8.0; };
+        };
+        /* Keep Readium's transitive SQLite dependency compatible with Xcode 16.2. */
+        F30000000000000000000005 /* SQLite.swift */ = {
+            isa = XCRemoteSwiftPackageReference;
+            repositoryURL = "https://github.com/stephencelis/SQLite.swift.git";
+            requirement = { kind = exactVersion; version = 0.15.4; };
         };
 /* End XCRemoteSwiftPackageReference section */
 

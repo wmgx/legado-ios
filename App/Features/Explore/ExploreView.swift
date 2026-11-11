@@ -120,28 +120,13 @@ struct ExploreView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                ReadingPageHeader(title: "发现", subtitle: "下一本好书，在这里遇见") {
+                ReadingPageHeader(title: "发现") {
                     NavigationLink { SearchView() } label: {
                         ReadingToolbarIcon(systemName: "magnifyingglass")
                     }
                     .accessibilityLabel("搜索")
                 }
                 VStack(alignment: .leading, spacing: 24) {
-                    HStack(spacing: 16) {
-                        Image(systemName: "safari")
-                            .font(.system(size: 30, weight: .ultraLight))
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("从喜欢的书源开始").font(.headline)
-                            Text("浏览分类与榜单，发现更多故事")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(22)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ReadingTheme.groupedCanvas, in: RoundedRectangle(cornerRadius: 20))
-
                     HStack(alignment: .firstTextBaseline) {
                         Text("分类与榜单").font(.title3.bold())
                             .accessibilityAddTraits(.isHeader)
@@ -196,7 +181,7 @@ struct ExploreView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.bottom, 32)
             }
         }

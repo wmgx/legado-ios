@@ -39,6 +39,12 @@ final class ReplaceRuleLibraryModel: ObservableObject {
         catch { notice = .init(kind: .error, title: "净化规则读取失败", detail: error.localizedDescription) }
     }
 
+    func applySyncedRules(_ values: [ReplaceRule]) async throws {
+        for rule in values { try ReplaceRuleValidator.validate(rule) }
+        let sorted = values.sorted { $0.sortOrder == $1.sortOrder ? $0.id < $1.id : $0.sortOrder < $1.sortOrder }
+        if sorted != rules { try await saveRules(sorted) }
+    }
+
     func importFiles(_ urls: [URL]) async {
         do {
             var updated = rules

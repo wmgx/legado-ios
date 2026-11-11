@@ -35,6 +35,7 @@ struct ReaderScrollView: UIViewRepresentable {
         private(set) var blocks: [ReaderScrollBlock] = []
         private var chapterLayouts: [Int: ReaderScrollChapterLayout] = [:]
         private weak var view: ReaderScrollCollectionView?
+        private weak var readerTap: UITapGestureRecognizer?
         var displayLink: CADisplayLink?
         private var lastTimestamp: CFTimeInterval = 0
         private var styleKey = ""
@@ -63,6 +64,7 @@ struct ReaderScrollView: UIViewRepresentable {
             let collection = ReaderScrollCollectionView(frame: .zero, collectionViewLayout: ReaderContinuousLayout())
             collection.backgroundColor = parent.configuration.backgroundColor
             collection.contentInsetAdjustmentBehavior = .never
+            collection.scrollsToTop = parent.configuration.scrollsToTop
             collection.alwaysBounceVertical = true
             collection.showsVerticalScrollIndicator = false
             collection.decelerationRate = .normal
@@ -71,8 +73,10 @@ struct ReaderScrollView: UIViewRepresentable {
             collection.accessibilityIdentifier = "reader.continuous"
             collection.register(ReaderScrollCell.self, forCellWithReuseIdentifier: "text")
             let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
+            tap.cancelsTouchesInView = false
             tap.delegate = self
             collection.addGestureRecognizer(tap)
+            readerTap = tap
             collection.viewportChanged = { [weak self, weak collection] in
                 guard let self, let collection else { return }
                 self.update(collection)
@@ -89,6 +93,7 @@ struct ReaderScrollView: UIViewRepresentable {
             applying = true
             defer { applying = false }
             let config = parent.configuration
+            view.scrollsToTop = config.scrollsToTop
             if wasLoadingAhead, !parent.loadingAhead { requestedAhead = nil }
             if wasLoadingBehind, !parent.loadingBehind { requestedBehind = nil }
             wasLoadingAhead = parent.loadingAhead
@@ -109,7 +114,7 @@ struct ReaderScrollView: UIViewRepresentable {
                 chapterLayouts = [:]
             }
             let anchor = reset ? nil : captureAnchor()
-            let newStyleKey = config.scrollTypographyKey + "|\(view.bounds.width)"
+            let newStyleKey = config.scrollTypographyKey + "|\(view.bounds.width)|\(config.usesTwoPages)|\(config.usesTwoPages ? view.bounds.height : 0)"
             let styleChanged = styleKey != newStyleKey
             let contentChanged = styleChanged || viewportHeight != view.bounds.height || parent.chapters.count != chapterLayouts.count
                 || parent.chapters.contains { chapterLayouts[$0.id]?.chapter != $0 }
@@ -121,7 +126,7 @@ struct ReaderScrollView: UIViewRepresentable {
                         layouts[chapter.id] = cached
                     } else {
                         layouts[chapter.id] = ReaderScrollChapterLayout(
-                            chapter: chapter, configuration: config, width: view.bounds.width
+                            chapter: chapter, configuration: config, width: view.bounds.width, viewportHeight: view.bounds.height, scale: view.traitCollection.displayScale
                         )
                     }
                 }
@@ -188,6 +193,7 @@ struct ReaderScrollView: UIViewRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "text", for: indexPath) as! ReaderScrollCell
+            cell.canvas.onAddPurification = parent.configuration.onAddPurification
             cell.canvas.block = blocks[indexPath.item]
             return cell
         }
@@ -210,6 +216,17 @@ struct ReaderScrollView: UIViewRepresentable {
         }
 
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { scheduleReport() }
+
+        func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+            guard parent.configuration.scrollsToTop else { return false }
+            seek(chapter: parent.activeIndex, position: 0, includeHeading: true)
+            return false
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            gestureRecognizer === readerTap || otherGestureRecognizer === readerTap
+        }
 
         private func scheduleReport() {
             guard !reporting else { return }
@@ -287,7 +304,8 @@ struct ReaderScrollView: UIViewRepresentable {
             let block = blocks[row], chapter = block.chapter
             let localY = max(y - layout.frames[row].minY, 0) + block.top
             let glyph = chapter.manager.glyphIndex(for: CGPoint(x: 0, y: localY + 0.5), in: chapter.container)
-            let safeGlyph = min(glyph, max(chapter.manager.numberOfGlyphs - 1, 0))
+            let firstRange = block.secondGlyphRange.map { NSRange(location: block.glyphRange.location, length: $0.location - block.glyphRange.location) } ?? block.glyphRange
+            let safeGlyph = min(max(glyph, firstRange.location), max(NSMaxRange(firstRange) - 1, 0))
             let character = chapter.manager.characterIndexForGlyph(at: safeGlyph)
             let lineY = chapter.manager.lineFragmentRect(forGlyphAt: safeGlyph, effectiveRange: nil).minY
             return Anchor(
@@ -308,7 +326,9 @@ struct ReaderScrollView: UIViewRepresentable {
                 $0.chapter.chapter.id == anchor.chapter && NSLocationInRange(glyph, $0.glyphRange)
             }) else { return nil }
             let lineY = chapter.manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
-            return frames[row].minY + lineY - blocks[row].top - anchor.screenY
+            let block = blocks[row]
+            let top = block.secondGlyphRange.map { NSLocationInRange(glyph, $0) } == true ? block.secondTop : block.top
+            return frames[row].minY + lineY - top - anchor.screenY
         }
 
         private func seek(chapter: Int, position: Int, includeHeading: Bool) {
@@ -321,7 +341,8 @@ struct ReaderScrollView: UIViewRepresentable {
         }
 
         @objc private func tapped(_ gesture: UITapGestureRecognizer) {
-            guard let view, !view.isDragging, !view.isDecelerating else { return }
+            guard let view, !view.isDragging, !view.isDecelerating,
+                  !view.visibleCells.contains(where: { ($0 as? ReaderScrollCell)?.canvas.hasSelection == true }) else { return }
             let point = gesture.location(in: view)
             if let row = (view.collectionViewLayout as? ReaderContinuousLayout)?.row(at: point.y),
                blocks[row].chapter.chapter.error != nil {
@@ -329,11 +350,11 @@ struct ReaderScrollView: UIViewRepresentable {
                 return
             }
             let x = point.x - view.bounds.minX, y = point.y - view.bounds.minY
-            let column = min(max(Int(x / max(view.bounds.width / 3, 1)), 0), 2)
-            let row = min(max(Int(y / max(view.bounds.height / 3, 1)), 0), 2)
-            let index = row * 3 + column
+            let c = parent.configuration
+            let index = ReaderTapZones.index(x: x, y: y, size: view.bounds.size, x1: c.tapX1, x2: c.tapX2, y1: c.tapY1, y2: c.tapY2)
+            let column = index % 3
             let actions = parent.configuration.clickActions
-            let action = index == 4 ? 0 : (actions.indices.contains(index) ? actions[index] : 0)
+            let action = index == 4 || (parent.configuration.usesTwoPages && column == 1) ? 0 : (actions.indices.contains(index) ? actions[index] : 0)
             if action != 1, action != 2, action != -1 { parent.configuration.onTapAction(action) }
         }
 
@@ -451,6 +472,8 @@ struct ReaderScrollBlock {
     let glyphRange: NSRange
     let top: CGFloat
     let height: CGFloat
+    var secondGlyphRange: NSRange? = nil
+    var secondTop: CGFloat = 0
     var id: ID { .init(chapter: chapter.chapter.id, firstGlyph: glyphRange.location) }
 }
 
@@ -462,16 +485,20 @@ final class ReaderScrollChapterLayout {
     let container: NSTextContainer
     let bodyStart: Int
     let left: CGFloat
-    private var fragments: [(range: NSRange, top: CGFloat, height: CGFloat)] = []
+    let columnWidth: CGFloat
+    private var fragments: [(range: NSRange, top: CGFloat, height: CGFloat, second: NSRange?, secondTop: CGFloat)] = []
     var blocks: [ReaderScrollBlock] {
-        fragments.map { .init(chapter: self, glyphRange: $0.range, top: $0.top, height: $0.height) }
+        fragments.map { .init(chapter: self, glyphRange: $0.range, top: $0.top, height: $0.height,
+                             secondGlyphRange: $0.second, secondTop: $0.secondTop) }
     }
 
-    init(chapter: ReaderScrollChapter, configuration: ReaderTextView, width: CGFloat) {
+    init(chapter: ReaderScrollChapter, configuration: ReaderTextView, width: CGFloat, viewportHeight: CGFloat = 0, scale: CGFloat = 1) {
         self.chapter = chapter
         let typography = ReaderTypography(configuration: configuration)
         left = CGFloat(configuration.paddingLeft) + 4
-        let textWidth = max(width - left - CGFloat(configuration.paddingRight) - 4, 1)
+        let twoPages = configuration.usesTwoPages && viewportHeight > 0
+        columnWidth = twoPages ? max((width - 24) / 2, 1) : width
+        let textWidth = max(columnWidth - left - CGFloat(configuration.paddingRight) - 4, 1)
         container = NSTextContainer(size: CGSize(width: textWidth, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         let attributed = NSMutableAttributedString(string: "")
@@ -485,19 +512,30 @@ final class ReaderScrollChapterLayout {
         storage.addLayoutManager(manager)
         manager.addTextContainer(container)
         manager.ensureLayout(for: container)
+        if twoPages {
+            let height = max(viewportHeight - CGFloat(configuration.paddingTop + configuration.paddingBottom), 1)
+            let leaves = ReaderTextPagination.pages(manager: manager, container: container, height: height, scale: max(scale, 1))
+            for index in stride(from: 0, to: leaves.count, by: 2) {
+                let first = leaves[index]
+                let second = index + 1 < leaves.count ? leaves[index + 1] : nil
+                fragments.append((second.map { NSUnionRange(first.glyphRange, $0.glyphRange) } ?? first.glyphRange,
+                                  first.offset, max(first.visibleHeight, second?.visibleHeight ?? 0, 1), second?.glyphRange, second?.offset ?? 0))
+            }
+            return
+        }
         var startGlyph = 0
         var top: CGFloat = 0
         let count = manager.numberOfGlyphs
         manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: count)) { rect, _, _, range, _ in
             if rect.minY - top >= 1000, range.location > startGlyph {
                 self.fragments.append((NSRange(location: startGlyph, length: range.location - startGlyph),
-                                       top, rect.minY - top))
+                                       top, rect.minY - top, nil, 0))
                 startGlyph = range.location
                 top = rect.minY
             }
         }
         let bottom = manager.usedRect(for: container).maxY + CGFloat(configuration.fontSize * 1.4)
-        fragments.append((NSRange(location: startGlyph, length: count - startGlyph), top, max(bottom - top, 1)))
+        fragments.append((NSRange(location: startGlyph, length: count - startGlyph), top, max(bottom - top, 1), nil, 0))
     }
 }
 
@@ -517,29 +555,62 @@ private final class ReaderScrollCell: UICollectionViewCell {
 
 @MainActor
 private final class ReaderScrollCanvas: UIView {
+    private let left = ReaderSelectableTextView(frame: .zero, textContainer: nil)
+    private let right = ReaderSelectableTextView(frame: .zero, textContainer: nil)
+    var onAddPurification: ((String) -> Void)? {
+        didSet { left.onAddPurification = onAddPurification; right.onAddPurification = onAddPurification }
+    }
+    var hasSelection: Bool { left.selectedRange.length > 0 || right.selectedRange.length > 0 }
     var block: ReaderScrollBlock? {
         didSet {
-            if let block {
-                let range = block.chapter.manager.characterRange(forGlyphRange: block.glyphRange, actualGlyphRange: nil)
-                accessibilityLabel = block.chapter.storage.attributedSubstring(from: range).string
-            } else { accessibilityLabel = nil }
-            setNeedsDisplay()
+            guard let block else {
+                left.attributedText = nil; right.attributedText = nil
+                return
+            }
+            if oldValue?.chapter !== block.chapter {
+                left.attributedText = block.chapter.storage
+                right.attributedText = block.chapter.storage
+            }
+            setNeedsLayout()
         }
     }
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        isOpaque = false
-        isAccessibilityElement = true
-        accessibilityTraits = .staticText
-        contentMode = .redraw
+        for textView in [left, right] {
+            textView.scrollsToTop = false
+            textView.isEditable = false
+            textView.isSelectable = true
+            textView.isScrollEnabled = false
+            textView.backgroundColor = .clear
+            textView.isOpaque = false
+            textView.textContainerInset = .zero
+            textView.textContainer.lineFragmentPadding = 0
+            textView.contentInsetAdjustmentBehavior = .never
+            textView.textContainer.widthTracksTextView = false
+            textView.delegate = textView
+            textView.accessibilityIdentifier = "reader.text"
+            addSubview(textView)
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func draw(_ rect: CGRect) {
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
         guard let block else { return }
-        let origin = CGPoint(x: block.chapter.left, y: -block.top)
-        block.chapter.manager.drawBackground(forGlyphRange: block.glyphRange, at: origin)
-        block.chapter.manager.drawGlyphs(forGlyphRange: block.glyphRange, at: origin)
+        let chapter = block.chapter
+        left.frame = CGRect(x: chapter.left, y: 0, width: chapter.container.size.width, height: bounds.height)
+        left.textContainer.size = chapter.container.size
+        left.layoutManager.ensureLayout(for: left.textContainer)
+        left.setContentOffset(CGPoint(x: 0, y: block.top), animated: false)
+        right.isHidden = block.secondGlyphRange == nil
+        if !right.isHidden {
+            right.frame = CGRect(x: chapter.columnWidth + 24 + chapter.left, y: 0, width: chapter.container.size.width, height: bounds.height)
+            right.textContainer.size = chapter.container.size
+            right.layoutManager.ensureLayout(for: right.textContainer)
+            right.setContentOffset(CGPoint(x: 0, y: block.secondTop), animated: false)
+        }
     }
 }
 

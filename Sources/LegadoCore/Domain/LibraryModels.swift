@@ -122,6 +122,7 @@ public struct Book: Codable, Hashable, Identifiable, Sendable {
 public struct BookReadConfig: Codable, Hashable, Sendable {
     /// Serialized EPUB locator, independent of the device's font size and pagination.
     public var epubLocation: String?
+    public var readChapterTitles: [String]?
     public var reverseToc = false
     public var pageAnim: Int?
     public var reSegment = false
@@ -144,12 +145,13 @@ public struct BookReadConfig: Codable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case reverseToc, pageAnim, reSegment, imageStyle, useReplaceRule, delTag, ttsEngine
         case splitLongChapter, readSimulating, startDate, startChapter, dailyChapters
-        case openCredits, closeCredits, playMode, playSpeed, epubLocation
+        case openCredits, closeCredits, playMode, playSpeed, epubLocation, readChapterTitles
     }
 
     public init(from decoder: Decoder) throws {
         let value = try decoder.container(keyedBy: CodingKeys.self)
         epubLocation = try value.decodeIfPresent(String.self, forKey: .epubLocation)
+        readChapterTitles = try value.decodeIfPresent([String].self, forKey: .readChapterTitles)
         reverseToc = try value.decodeIfPresent(Bool.self, forKey: .reverseToc) ?? false
         pageAnim = try value.decodeIfPresent(Int.self, forKey: .pageAnim)
         reSegment = try value.decodeIfPresent(Bool.self, forKey: .reSegment) ?? false

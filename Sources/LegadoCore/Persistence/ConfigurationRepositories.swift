@@ -302,19 +302,23 @@ public protocol ConfigurationRepository: Sendable {
     func saveServers(_ values: [Server]) async throws
 }
 
+public extension Notification.Name {
+    static let legadoConfigurationChanged = Notification.Name("LegadoConfigurationChanged")
+}
+
 public actor SQLiteConfigurationRepository: ConfigurationRepository {
     private let database: LegadoDatabase
     public init(database: LegadoDatabase) { self.database = database }
     public func loadTxtTocRules() async throws -> [TxtTocRule] { try await database.loadTxtTocRules() }
-    public func saveTxtTocRules(_ values: [TxtTocRule]) async throws { try await database.replaceTxtTocRules(values) }
+    public func saveTxtTocRules(_ values: [TxtTocRule]) async throws { try await database.replaceTxtTocRules(values); NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil) }
     public func loadHttpTTS() async throws -> [HttpTTS] { try await database.loadHttpTTS() }
-    public func saveHttpTTS(_ values: [HttpTTS]) async throws { try await database.replaceHttpTTS(values) }
+    public func saveHttpTTS(_ values: [HttpTTS]) async throws { try await database.replaceHttpTTS(values); NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil) }
     public func loadRuleSubs() async throws -> [RuleSub] { try await database.loadRuleSubs() }
-    public func saveRuleSubs(_ values: [RuleSub]) async throws { try await database.replaceRuleSubs(values) }
+    public func saveRuleSubs(_ values: [RuleSub]) async throws { try await database.replaceRuleSubs(values); NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil) }
     public func loadKeyboardAssists() async throws -> [KeyboardAssist] { try await database.loadKeyboardAssists() }
-    public func saveKeyboardAssists(_ values: [KeyboardAssist]) async throws { try await database.replaceKeyboardAssists(values) }
+    public func saveKeyboardAssists(_ values: [KeyboardAssist]) async throws { try await database.replaceKeyboardAssists(values); NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil) }
     public func loadServers() async throws -> [Server] { try await database.loadServers() }
-    public func saveServers(_ values: [Server]) async throws { try await database.replaceServers(values) }
+    public func saveServers(_ values: [Server]) async throws { try await database.replaceServers(values); NotificationCenter.default.post(name: .legadoConfigurationChanged, object: nil) }
 }
 
 public actor SQLiteSearchBookRepository: SearchBookRepository {

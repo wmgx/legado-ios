@@ -29,7 +29,7 @@ struct DiagnosticLogView: View {
                 Text("\(entries.count) 条日志 · 下拉刷新")
                     .font(.footnote).foregroundStyle(.secondary)
             } footer: {
-                Text("在“其他设置”开启记录后，会保存网络请求、JS 输出和运行错误。崩溃诊断由 iOS 延迟提供，可搜索“系统诊断”查看。")
+                Text("在“帮助与诊断”开启记录后，会保存网络请求、JS 输出和运行错误。崩溃诊断由 iOS 延迟提供，可搜索“系统诊断”查看。")
             }
             if filtered.isEmpty {
                 ReadingUnavailableView(query.isEmpty ? "暂无日志" : "没有匹配的日志", systemImage: "doc.text.magnifyingglass")

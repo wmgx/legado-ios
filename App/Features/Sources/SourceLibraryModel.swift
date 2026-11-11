@@ -119,6 +119,13 @@ final class SourceLibraryModel: ObservableObject {
         }
     }
 
+    func applySyncedSources(_ values: [BookSource]) async throws {
+        let issues = values.flatMap(BookSourceValidator.validate).filter { $0.severity == .error }
+        guard issues.isEmpty else { throw BookSourceImportError.invalidSources(issues) }
+        let sorted = values.sorted { $0.customOrder == $1.customOrder ? $0.id < $1.id : $0.customOrder < $1.customOrder }
+        if sorted != sources { try await saveSources(sorted) }
+    }
+
     func importFiles(_ urls: [URL]) async {
         isWorking = true
         defer { isWorking = false }

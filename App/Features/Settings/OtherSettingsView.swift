@@ -1,21 +1,32 @@
 import SwiftUI
 import WebKit
 
-struct OtherSettingsView: View {
+struct SyncSettingsView: View {
+    @ObservedObject private var cloud = ICloudSyncModel.shared
+    var body: some View {
+        Form {
+            Section {
+                Toggle("iCloud 同步", isOn: Binding(get: { cloud.isEnabled }, set: { cloud.setEnabled($0) }))
+                if cloud.isEnabled {
+                    Text(cloud.status).font(.footnote).foregroundStyle(.secondary)
+                    if let date = cloud.lastSynced {
+                        Text("上次同步：\(date.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("立即同步") { Task { await cloud.synchronize() } }.disabled(cloud.isSyncing)
+                }
+            } header: { Text("设备间同步") } footer: {
+                Text("使用同一 Apple 账号同步书架、本地 TXT/EPUB、进度、书签、阅读记录、书源、RSS、规则、订阅、朗读引擎、字体、背景和设置。配置中填写的密钥也会同步至个人 iCloud；登录会话、缓存和日志留在本机。关闭同步不会删除数据。")
+            }
+        }
+        .navigationTitle("同步")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct StartupSettingsView: View {
     @AppStorage("auto_refresh") private var autoRefresh = false
     @AppStorage("onlyUpdateRead") private var onlyUpdateRead = false
     @AppStorage("defaultHomePage") private var defaultHomePage = "bookshelf"
-    @State private var settings = ApplicationSettingsStore.shared.settings
-    @State private var maintenance: Maintenance?
-    @State private var isWorking = false
-    @State private var message: String?
-
-    private enum Maintenance: String, Identifiable {
-        case webCache = "清理网页缓存"
-        case database = "整理数据库"
-        var id: String { rawValue }
-    }
-
     var body: some View {
         Form {
             Section("启动与书架") {
@@ -23,21 +34,23 @@ struct OtherSettingsView: View {
                     Text("书架").tag("bookshelf")
                     Text("发现").tag("explore")
                     Text("统计").tag("statistics")
-                    Text("设置").tag("settings")
+                    Text("我的").tag("settings")
                 }
                 Toggle("启动时更新书架", isOn: $autoRefresh)
                 Toggle("自动更新仅检查读过的书", isOn: $onlyUpdateRead).disabled(!autoRefresh)
             }
-            Section("网络与存储") {
-                NavigationLink {
-                    NetworkSettingsView()
-                } label: { Label("网络与缓存设置", systemImage: "network") }
-                NavigationLink {
-                    CacheManagementView()
-                } label: { Label("章节缓存管理", systemImage: "internaldrive") }
-                Button("清理网页缓存", systemImage: "globe") { maintenance = .webCache }
-                Button("整理数据库", systemImage: "externaldrive.badge.checkmark") { maintenance = .database }
-            }
+            Section { Text("修改后立即生效。").font(.footnote).foregroundStyle(.secondary) }
+        }
+        .navigationTitle("启动与书架")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct DiagnosticsSettingsView: View {
+    @State private var settings = ApplicationSettingsStore.shared.settings
+    @State private var message: String?
+    var body: some View {
+        Form {
             Section {
                 Toggle("记录运行日志", isOn: Binding(get: { settings.recordLog }, set: { enabled in
                     var value = ApplicationSettingsStore.shared.settings
@@ -52,11 +65,36 @@ struct OtherSettingsView: View {
                 Text("日志仅保存在本机，最多保留 500 条。网络日志不记录请求正文与 Header，URL 查询参数和常见凭据会隐藏。")
             }
         }
-        .navigationTitle("其他设置")
+        .navigationTitle("帮助与诊断")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("保存失败", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+            Button("好") { message = nil }
+        } message: { Text(message ?? "") }
+    }
+}
+
+struct StorageMaintenanceView: View {
+    @State private var maintenance: Maintenance?
+    @State private var isWorking = false
+    @State private var message: String?
+
+    private enum Maintenance: String, Identifiable {
+        case webCache = "清理网页缓存"
+        case database = "整理数据库"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Button("清理网页缓存", systemImage: "globe") { maintenance = .webCache }
+                Button("整理数据库", systemImage: "externaldrive.badge.checkmark") { maintenance = .database }
+            }
+        }
+        .navigationTitle("存储维护")
         .navigationBarTitleDisplayMode(.inline)
         .disabled(isWorking)
         .overlay { if isWorking { ProgressView("正在处理…").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-        .onAppear { settings = ApplicationSettingsStore.shared.settings }
         .confirmationDialog(maintenance?.rawValue ?? "", isPresented: Binding(
             get: { maintenance != nil }, set: { if !$0 { maintenance = nil } }
         ), titleVisibility: .visible) {
@@ -99,6 +137,8 @@ struct NetworkSettingsView: View {
     @State private var settings = ApplicationSettingsStore.shared.settings
     @State private var errorMessage: String?
     @State private var isSaving = false
+    @State private var initialSettings = ApplicationSettingsStore.shared.settings
+    @State private var showsDiscard = false
 
     var body: some View {
         Form {
@@ -134,29 +174,30 @@ struct NetworkSettingsView: View {
                 Text("证书兼容开启时允许自签名或过期证书；关闭后由系统验证 HTTPS 证书。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-            Section("章节缓存") {
-                Picker("容量上限", selection: $settings.chapterCacheMB) {
-                    ForEach([16, 32, 64, 128, 256, 512, 1024, 2048, 4096], id: \.self) {
-                        Text($0 >= 1024 ? "\($0 / 1024) GB" : "\($0) MB").tag($0)
-                    }
-                }
-                Stepper(settings.prefetchChapters == 0 ? "关闭章节预加载" : "预加载 \(settings.prefetchChapters) 章", value: $settings.prefetchChapters, in: 0...20)
-                Text("默认提前缓存后续 10 章，翻章或滚动进入下一章时继续补齐；已缓存章节不重复下载。")
-                    .font(.footnote).foregroundStyle(.secondary)
-                Text("超出上限时清理最久未读取的章节；容量调整在保存时生效。")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
             Section {
                 Button("恢复本页默认值") {
-                    let recordLog = settings.recordLog
-                    settings = .init()
-                    settings.recordLog = recordLog
+                    let defaults = ApplicationSettings()
+                    settings.userAgent = defaults.userAgent
+                    settings.proxy = defaults.proxy
+                    settings.hosts = defaults.hosts
+                    settings.timeoutSeconds = defaults.timeoutSeconds
+                    settings.concurrentSources = defaults.concurrentSources
+                    settings.ignoreCertificateErrors = defaults.ignoreCertificateErrors
                 }
             }
         }
-        .navigationTitle("网络与缓存")
+        .navigationTitle("网络设置")
+        .navigationBarBackButtonHidden(true)
+        .interactiveDismissDisabled(settings != initialSettings || isSaving)
         .navigationBarTitleDisplayMode(.inline)
+        .alert("放弃未保存的修改？", isPresented: $showsDiscard) {
+            Button("放弃修改", role: .destructive) { dismiss() }
+            Button("继续编辑", role: .cancel) {}
+        }
         .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("取消") { if settings != initialSettings { showsDiscard = true } else { dismiss() } }
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button("保存") { Task { await save() } }.disabled(isSaving)
             }
@@ -171,10 +212,12 @@ struct NetworkSettingsView: View {
         isSaving = true
         defer { isSaving = false }
         do {
-            settings.recordLog = ApplicationSettingsStore.shared.settings.recordLog
+            let current = ApplicationSettingsStore.shared.settings
+            settings.recordLog = current.recordLog
+            settings.chapterCacheMB = current.chapterCacheMB
+            settings.prefetchChapters = current.prefetchChapters
             try ApplicationSettingsStore.shared.save(settings)
-            try await ChapterContentCache.live().pruneIfNeeded()
-            DiagnosticLog.shared.record(category: "设置", message: "网络与缓存设置已保存")
+            DiagnosticLog.shared.record(category: "设置", message: "网络设置已保存")
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }

@@ -489,6 +489,7 @@ private struct RSSPhotoToolbar: ViewModifier {
     let close: () -> Void
 
     func body(content: Content) -> some View {
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             content.toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -499,12 +500,19 @@ private struct RSSPhotoToolbar: ViewModifier {
                 }.sharedBackgroundVisibility(.hidden)
             }
         } else {
-            content.toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("保存到照片", systemImage: "square.and.arrow.down", action: save).disabled(!canSave)
-                }
-                ToolbarItem(placement: .confirmationAction) { Button("完成", action: close) }
+            legacyToolbar(content)
+        }
+        #else
+        legacyToolbar(content)
+        #endif
+    }
+
+    private func legacyToolbar(_ content: Content) -> some View {
+        content.toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("保存到照片", systemImage: "square.and.arrow.down", action: save).disabled(!canSave)
             }
+            ToolbarItem(placement: .confirmationAction) { Button("完成", action: close) }
         }
     }
 }

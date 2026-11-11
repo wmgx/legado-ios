@@ -44,7 +44,7 @@ let package = Package(
                 "RSS/RSSAddBookView.swift", "RSS/RSSSourceDebugView.swift", "RSS/RSSSourceEditorView.swift", "RSS/RSSViews.swift", "RSS/RSSWebReaderView.swift",
                 "Sources/SourceManagementView.swift", "Sources/SourceDebugView.swift", "Sources/SourceLoginView.swift", "Sources/SourceEditorView.swift",
                 "Rules/ReplaceRuleManagementView.swift", "Rules/ReplaceRuleEditorView.swift", "Rules/RuleSubscriptionView.swift", "Rules/TxtTocRuleManagementView.swift", "Rules/Editor",
-                "Books/BookDetailView.swift", "Books/LocalBookDetailView.swift", "Books/SourceSwitchView.swift",
+                "Books/BookDownloadView.swift", "Books/BookDetailView.swift", "Books/LocalBookDetailView.swift", "Books/SourceSwitchView.swift",
                 "Reader/ReaderAppearance.swift", "Reader/ReaderSpeechController.swift", "Reader/ReaderSupport.swift",
                 "Reader/EPUBReaderView.swift", "Reader/EPUBIllustrationsView.swift", "Reader/ReaderTextView.swift", "Reader/ReaderScrollView.swift", "Reader/ReaderView.swift"
             ],
@@ -52,7 +52,7 @@ let package = Package(
                 "Activity/ReadingActivityModel.swift", "RSS/RSSLibraryModel.swift",
                 "Rules/RuleSubscriptionModel.swift",
                 "Sources/SourceLibraryModel.swift", "Rules/ReplaceRuleLibraryModel.swift", "Search/SearchViewModel.swift",
-                "Books/BookLibraryModel.swift", "Books/BookDetailViewModel.swift",
+                "Books/BookLibraryModel.swift", "Books/BookDetailViewModel.swift", "Books/BookDownloadModel.swift",
                 "Books/BookshelfReadViewModel.swift", "Reader/ReaderViewModel.swift"
             ]
         ),

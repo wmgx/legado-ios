@@ -32,8 +32,8 @@ final class ReaderScrollGestureTests: XCTestCase {
 
         func openAppearance() {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            app.buttons["外观"].tap()
-            let panelRestored = app.navigationBars["阅读样式"].waitForExistence(timeout: 5)
+            app.buttons["设置"].tap()
+            let panelRestored = app.staticTexts["阅读设置"].waitForExistence(timeout: 5)
             if !panelRestored { print(app.debugDescription); attachScreenshot(app) }
             XCTAssertTrue(panelRestored)
             scrollToAppearanceElement(useBackground, in: app)
@@ -88,7 +88,7 @@ final class ReaderScrollGestureTests: XCTestCase {
             let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "取消"])).firstMatch
             XCTAssertTrue(cancel.waitForExistence(timeout: 10))
             cancel.tap()
-            XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 5))
         }
     }
 
@@ -114,7 +114,7 @@ final class ReaderScrollGestureTests: XCTestCase {
             photo.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             let dismissed = expectation(for: NSPredicate { _, _ in !cancel.exists }, evaluatedWith: nil)
             wait(for: [dismissed], timeout: 15)
-            XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 15))
+            XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 15))
             let useBackground = app.switches["使用背景图片"]
             scrollToAppearanceElement(useBackground, in: app)
             XCTAssertEqual(useBackground.value as? String, "1")
@@ -136,7 +136,7 @@ final class ReaderScrollGestureTests: XCTestCase {
             if !pickerAppeared { print(app.debugDescription); attachScreenshot(app) }
             XCTAssertTrue(pickerAppeared)
             cancel.tap()
-            XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 5))
         }
     }
 
@@ -171,7 +171,7 @@ final class ReaderScrollGestureTests: XCTestCase {
         continueAfterFailure = false
         let app = launchAppearance()
         app.segmentedControls.buttons["文字"].tap()
-        XCTAssertTrue(app.segmentedControls.buttons["高级"].exists)
+        XCTAssertTrue(app.segmentedControls.buttons["翻页"].exists)
         XCTAssertTrue(app.buttons["恢复默认值"].exists)
         XCTAssertEqual(app.sliders.count, 4)
         XCTAssertFalse(app.buttons["选择字体文件"].exists)
@@ -179,16 +179,16 @@ final class ReaderScrollGestureTests: XCTestCase {
             let slider = app.sliders[name]
             XCTAssertTrue(slider.isHittable)
             slider.adjust(toNormalizedSliderPosition: 0.3)
-            XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 5))
             let restored = expectation(for: NSPredicate { _, _ in
-                app.segmentedControls.buttons["边距"].isHittable
+                app.segmentedControls.buttons["布局"].isHittable
             }, evaluatedWith: nil)
             wait(for: [restored], timeout: 5)
         }
         app.buttons["恢复默认值"].tap()
         XCTAssertEqual(app.sliders["字号"].value as? String, "20")
         XCTAssertEqual(app.sliders["行间距"].value as? String, "12")
-        app.segmentedControls.buttons["边距"].tap()
+        app.segmentedControls.buttons["布局"].tap()
         scrollToAppearanceElement(app.sliders["正文上边距"], in: app)
         XCTAssertTrue(app.sliders["正文上边距"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.sliders["页眉上边距"].exists)
@@ -255,7 +255,7 @@ final class ReaderScrollGestureTests: XCTestCase {
         app.launchArguments = ["-uiDemo", "-uiDemoReader", "-uiDemoReaderStyle", "-pageAnim", readingMode, "-themeMode", "1", "-textFont", ""]
         if usesLegacyUI { app.launchArguments.append("-uiLegacyCompatibility") }
         app.launch()
-        XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 20))
         app.segmentedControls.buttons["外观"].tap()
         return app
     }
@@ -399,6 +399,10 @@ final class ReaderScrollGestureTests: XCTestCase {
         }
         waitForChapter("第一章 · 雨夜")
         showMenu()
+        let chapterProgress = app.sliders["reader.chapterProgress"]
+        XCTAssertTrue(chapterProgress.waitForExistence(timeout: 5))
+        chapterProgress.adjust(toNormalizedSliderPosition: 0.8)
+        waitForChapter("第一章 · 雨夜")
         XCTAssertFalse(app.buttons["上一章"].isEnabled)
         app.buttons["下一章"].tap()
         waitForChapter("第二章 · 灯塔")
@@ -417,7 +421,8 @@ final class ReaderScrollGestureTests: XCTestCase {
         showMenu()
         XCTAssertFalse(app.buttons["下一章"].isEnabled)
 
-        app.buttons["更多"].tap()
+        // iOS 18 exposes SwiftUI Menu's wrapper without an accessibility hit point.
+        app.buttons["更多"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         app.buttons["搜索正文"].tap()
         XCTAssertTrue(app.navigationBars["正文搜索"].waitForExistence(timeout: 5))
         let contentSearch = app.searchFields["搜索本章"]
@@ -430,27 +435,27 @@ final class ReaderScrollGestureTests: XCTestCase {
 
         showMenu()
         app.buttons["书签"].tap()
-        app.buttons["更多"].tap()
+        app.buttons["更多"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         app.buttons["书签列表"].tap()
         XCTAssertTrue(app.navigationBars["书签"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["第五章 · 天明"].firstMatch.waitForExistence(timeout: 5))
         app.buttons["关闭"].tap()
 
         showMenu()
-        app.buttons["外观"].tap()
-        XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 5))
+        app.buttons["设置"].tap()
+        XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 5))
         if usesLegacyUI {
             app.segmentedControls.buttons["外观"].tap()
             app.buttons["选择背景图片"].tap()
             let cancel = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "取消"])).firstMatch
             XCTAssertTrue(cancel.waitForExistence(timeout: 10))
             cancel.tap()
-            XCTAssertTrue(app.navigationBars["阅读样式"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 5))
         }
         app.buttons["完成"].tap()
         showMenu()
         app.buttons["设置"].tap()
-        XCTAssertTrue(app.navigationBars["阅读设置"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["阅读设置"].waitForExistence(timeout: 5))
         app.buttons["完成"].tap()
         waitForChapter("第五章 · 天明")
         attachScreenshot(app)

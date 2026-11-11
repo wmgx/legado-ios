@@ -216,6 +216,7 @@ private final class SourceBatchTestModel: ObservableObject {
 }
 
 struct SourceBatchTestView: View {
+    var sourceIDs: Set<String>? = nil
     private enum CleanupAction: String, Identifiable {
         case disable
         case delete
@@ -224,13 +225,14 @@ struct SourceBatchTestView: View {
 
     @EnvironmentObject private var library: SourceLibraryModel
     @StateObject private var model = SourceBatchTestModel()
-    @AppStorage("sourceTestKeyword") private var keyword = "我的"
+    @AppStorage("sourceTestKeyword") private var keyword = "家父汉高祖"
     @State private var includesDisabled = false
     @State private var onlyShowsFailed = false
     @State private var cleanupAction: CleanupAction?
 
     private var testedSources: [BookSource] {
-        includesDisabled ? library.sources : library.sources.filter(\.enabled)
+        if let sourceIDs { return library.sources.filter { sourceIDs.contains($0.id) } }
+        return includesDisabled ? library.sources : library.sources.filter(\.enabled)
     }
 
     private var visibleSources: [BookSource] {
@@ -246,8 +248,9 @@ struct SourceBatchTestView: View {
             Section {
                 TextField("校验搜索词", text: $keyword)
                     .textInputAutocapitalization(.never)
-                Toggle("包含已停用书源", isOn: $includesDisabled)
-                    .disabled(model.isTesting)
+                if sourceIDs == nil {
+                    Toggle("包含已停用书源", isOn: $includesDisabled).disabled(model.isTesting)
+                } else { Text("测试所选 \(testedSources.count) 个书源").foregroundStyle(.secondary) }
                 Toggle("只看失败", isOn: $onlyShowsFailed)
             } footer: {
                 Text("快速测试以搜索是否能返回结果为准。部分正常书源可能不收录当前关键词，删除前请复核或更换关键词重测。")
@@ -277,6 +280,7 @@ struct SourceBatchTestView: View {
                 }
             }
         }
+        .onDisappear { model.stop() }
         .navigationTitle("书源测试")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

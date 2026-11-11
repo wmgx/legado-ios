@@ -5,6 +5,30 @@ import LegadoCore
 
 @MainActor
 struct ReaderRegressionTests {
+    @Test func downloadsTrackFailuresAndRetryOnlyUnfinishedChapters() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = ChapterContentCache(directory: root)
+        let loader = DownloadRetryLoader()
+        let model = BookDownloadModel(loader: loader, cache: cache)
+        let book = Book(bookUrl: "download-book", name: "书", origin: "source")
+        var chapters = (0..<4).map { BookChapter(url: "d\($0)", title: "章\($0)", bookUrl: book.bookUrl, index: $0) }
+        chapters[1].isVolume = true
+        model.start(book: book, source: .init(bookSourceUrl: "source", bookSourceName: "源"), chapters: chapters, startIndex: 0, limit: nil)
+        await model.tasks[book.bookUrl]?.value
+        #expect(model.progress[book.bookUrl]?.total == 3)
+        #expect(model.progress[book.bookUrl]?.succeeded.count == 2)
+        #expect(model.progress[book.bookUrl]?.failures.count == 1)
+        #expect(try await cache.load(bookURL: book.bookUrl, chapterURL: "d2") == nil)
+        model.resume(book.bookUrl)
+        await model.tasks[book.bookUrl]?.value
+        #expect(model.progress[book.bookUrl]?.succeeded.count == 3)
+        #expect(model.progress[book.bookUrl]?.failures.isEmpty == true)
+        #expect(try await cache.downloadedStatistics().entries == 3)
+        #expect(await loader.calls(for: "d0") == 1)
+        #expect(await loader.calls(for: "d2") == 2)
+    }
+
     @Test func preparedPagedChaptersSwitchSynchronouslyAndReuseThePreviousBody() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -335,6 +359,10 @@ struct ReaderRegressionTests {
         ) == renderedLength - 1)
         #expect(ReaderPositionResolver.renderedLocation(position: 2, prefixLength: 4, renderedLength: 20) == 6)
         #expect(ReaderPositionResolver.renderedLocation(position: Int.max, prefixLength: Int.max, renderedLength: 0) == 0)
+        let ranges = [NSRange(location: 0, length: 4), NSRange(location: 4, length: 4), NSRange(location: 8, length: 4)]
+        #expect(ReaderPositionResolver.chapterPosition(fraction: 0.5, text: "十二三四五六七八九十末尾", pageRanges: ranges) == 4)
+        #expect(ReaderPositionResolver.chapterPosition(fraction: 1, text: "十二三四五六七八九十末尾", pageRanges: ranges) == 8)
+        #expect(ReaderPositionResolver.chapterPosition(fraction: 0.5, text: "👨‍👩‍👧‍👦", pageRanges: []) == 0)
     }
 
     @Test func enteringScrollModePreparesContinuationWithoutChangingCurrentChapter() async {
@@ -578,4 +606,16 @@ private actor TrackingPreloadReaderLoader: ChapterContentLoading {
         return .init(title: chapter.title, content: "正文\(chapter.index)")
     }
     func indices() -> [Int] { requests }
+}
+
+private actor DownloadRetryLoader: ChapterContentLoading {
+    private var counts: [String: Int] = [:]
+    func calls(for url: String) -> Int { counts[url, default: 0] }
+    func loadContent(book: Book, chapter: BookChapter, source: BookSource, nextChapterURL: String?, maxPages: Int) async -> ChapterContentReport {
+        counts[chapter.url, default: 0] += 1
+        if chapter.url == "d2", counts[chapter.url] == 1 {
+            return .init(content: "部分正文", diagnostics: [.init(severity: .error, code: "test.failed", message: "下载失败", rule: chapter.url)])
+        }
+        return .init(content: "完整正文")
+    }
 }

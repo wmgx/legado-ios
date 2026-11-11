@@ -50,7 +50,7 @@ final class WebReaderBridgeTests: XCTestCase {
         let marker = try await webView.evaluateJavaScript("window.appearanceMarker")
         XCTAssertEqual(marker as? String, "preserved")
         // A source may intentionally override the generated article palette.
-        _ = try await webView.evaluateJavaScript("document.head.insertAdjacentHTML('beforeend', '<style>body{color:rgb(120,30,40)}</style>')")
+        _ = try await webView.evaluateJavaScript("document.head.insertAdjacentHTML('beforeend', '<style>body{color:rgb(120,30,40)}</style>'); true")
         let custom = try await webView.evaluateJavaScript("getComputedStyle(document.body).color")
         XCTAssertEqual(custom as? String, "rgb(120, 30, 40)")
     }

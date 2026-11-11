@@ -256,6 +256,12 @@ public struct JavaScriptRuleEvaluator: Sendable {
         context.setObject(executionContext.baseURL, forKeyedSubscript: "baseUrl" as NSString)
         context.setObject(executionContext.key ?? "", forKeyedSubscript: "key" as NSString)
         context.setObject(executionContext.page ?? 0, forKeyedSubscript: "page" as NSString)
+        if let text = executionContext.variables["speakText"] {
+            context.setObject(text, forKeyedSubscript: "speakText" as NSString)
+        }
+        if let speed = executionContext.variables["speakSpeed"] {
+            context.setObject(Double(speed) ?? 10, forKeyedSubscript: "speakSpeed" as NSString)
+        }
         installJava(in: context, variables: box, result: result, executionContext: executionContext)
         installCookie(in: context)
         installJavaImporterCompatibility(in: context)

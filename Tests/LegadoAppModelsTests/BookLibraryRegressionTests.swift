@@ -36,6 +36,7 @@ struct BookLibraryRegressionTests {
         let stored = try #require(model.books.first)
         #expect(stored.durChapterIndex == 1)
         #expect(stored.durChapterPos == 123)
+        #expect(stored.readConfig?.readChapterTitles == ["第二章"])
         #expect(stored.group == 8)
         #expect(stored.totalChapterNum == 3)
         #expect(stored.latestChapterTitle == "第三章")

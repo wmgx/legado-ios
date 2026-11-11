@@ -3,6 +3,8 @@ import CryptoKit
 
 public enum HttpTTSServiceError: Error, LocalizedError, Sendable {
     case emptyText
+    case emptyAudio
+    case audioTooLarge
     case invalidContentType(expected: String, actual: String, body: String)
     case textResponse(contentType: String, body: String)
 
@@ -10,11 +12,28 @@ public enum HttpTTSServiceError: Error, LocalizedError, Sendable {
         switch self {
         case .emptyText:
             "朗读文本为空"
+        case .emptyAudio:
+            "朗读引擎返回了空音频"
+        case .audioTooLarge:
+            "本段朗读音频过大，请检查引擎配置"
         case .invalidContentType(let expected, let actual, let body):
             "TTS 返回类型不匹配（期望 \(expected)，实际 \(actual)）：\(body)"
         case .textResponse(_, let body):
-            body
+            Self.responseMessage(body)
         }
+    }
+
+    private static func responseMessage(_ body: String) -> String {
+        let value = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let nested = value?["error"] as? [String: Any]
+        let message = [value?["err_msg"], value?["message"], value?["msg"], value?["detail"], nested?["message"], value?["error"]]
+            .compactMap { $0 as? String }.first { !$0.isEmpty }
+        let plain = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = String((message ?? (plain.hasPrefix("<") || plain.hasPrefix("{") ? "未提供音频" : plain)).prefix(160))
+        if detail.localizedCaseInsensitiveContains("auth") {
+            return "朗读服务鉴权失败，请更新声源或检查凭据（\(detail)）"
+        }
+        return "朗读服务返回错误：\(detail.isEmpty ? "未提供音频" : detail)"
     }
 }
 
@@ -28,6 +47,13 @@ public struct HttpTTSAudio: Sendable {
         self.contentType = contentType
         self.finalURL = finalURL
     }
+}
+
+public struct HttpTTSVoice: Decodable, Hashable, Identifiable, Sendable {
+    public let name: String
+    public let language: String?
+    public let gender: String?
+    public var id: String { name }
 }
 
 public struct HttpTTSAudioStream: Sendable {
@@ -119,6 +145,24 @@ public actor HttpTTSService {
         self.cache = cache
     }
 
+    public func voices(address: String, apiKey: String) async throws -> [HttpTTSVoice] {
+        let engine = try HttpTTS.openAICompatible(id: 0, name: "服务", address: address)
+        guard let endpoint = engine.openAIServiceAddress, let base = URL(string: endpoint),
+              var url = URLComponents(url: base.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("voices"), resolvingAgainstBaseURL: false) else { throw URLError(.badURL) }
+        url.queryItems = [.init(name: "language", value: "zh-CN")]
+        guard let address = url.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: address, timeoutInterval: 15)
+        if !apiKey.isEmpty { request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization") }
+        let response = try await transport.data(for: request)
+        guard (200..<300).contains(response.statusCode) else { throw HTTPClientError.statusResponse(response) }
+        guard response.data.count <= 2 * 1024 * 1024 else { throw BookSourceImportError.invalidDocument("声音列表超过 2 MB") }
+        struct VoiceList: Decodable { let voices: [HttpTTSVoice] }
+        let voices = try JSONDecoder().decode(VoiceList.self, from: response.data).voices
+        var seen = Set<String>()
+        return voices.filter { !$0.name.isEmpty && seen.insert($0.id).inserted }
+    }
+
     public func audio(engine: HttpTTS, text: String, speechRate: Int) async throws -> HttpTTSAudio {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw HttpTTSServiceError.emptyText }
@@ -136,7 +180,7 @@ public actor HttpTTSService {
             source: source
         )
         var lastError: Error = HttpTTSServiceError.emptyText
-        for attempt in 0..<6 {
+        for attempt in 0..<3 {
             try Task.checkCancellation()
             do {
                 let prepared = try urlBuilder.prepare(
@@ -190,13 +234,15 @@ public actor HttpTTSService {
                     return .init(data: recovered.data, contentType: contentType, finalURL: recovered.finalURL)
                 }
                 lastError = HTTPClientError.statusResponse(response)
-                if attempt == 5 { throw lastError }
+                if attempt == 2 || ![408, 425, 429, 500, 502, 503, 504].contains(response.statusCode) { throw lastError }
             } catch let error as RuleEngineError {
                 throw error
             } catch {
                 lastError = error
-                if attempt == 5 { throw error }
+                let code = (error as? URLError)?.code
+                if attempt == 2 || ![URLError.timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet].contains(where: { $0 == code }) { throw error }
             }
+            try await Task.sleep(nanoseconds: UInt64(500_000_000 * (attempt + 1)))
         }
         throw lastError
     }
@@ -239,7 +285,17 @@ public actor HttpTTSService {
             transport: streamingTransport,
             timeout: 300
         )
+        let maximumBytes = 64 * 1024 * 1024
+        if let length = response.expectedContentLength, length > maximumBytes { throw HttpTTSServiceError.audioTooLarge }
         let contentType = Self.contentType(from: response.headers)
+        if let contentType, contentType == "application/json" || contentType.hasPrefix("text/") {
+            var body = Data()
+            for try await chunk in response.chunks {
+                body.append(chunk.prefix(4096 - body.count))
+                if body.count == 4096 { break }
+            }
+            throw HttpTTSServiceError.textResponse(contentType: contentType, body: String(decoding: body, as: UTF8.self))
+        }
         try validateStreamContentType(engine: engine, contentType: contentType)
         let upstream = response.chunks
         let cache = self.cache
@@ -252,9 +308,11 @@ public actor HttpTTSService {
                 do {
                     for try await chunk in upstream {
                         try Task.checkCancellation()
+                        guard complete.count + chunk.count <= maximumBytes else { throw HttpTTSServiceError.audioTooLarge }
                         complete.append(chunk)
                         continuation.yield(chunk)
                     }
+                    guard !complete.isEmpty else { throw HttpTTSServiceError.emptyAudio }
                     await cache.store(complete, for: cacheKey)
                     continuation.finish()
                 } catch {
@@ -277,12 +335,14 @@ public actor HttpTTSService {
             let engine: HttpTTS
             let text: String
             let speechRate: Int
+            let loginInfo: String
         }
         // Voices can share an endpoint and select their speaker through headers
-        // or JavaScript. Include the complete configuration and source identity.
+        // or JavaScript. Include service parameters so a changed voice uses new audio.
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        let data = try encoder.encode(CacheInput(engine: engine, text: text, speechRate: speechRate))
+        let loginInfo = BookSourceRuntimeStore.shared.get(sourceID: engine.sourceKey, key: "loginInfo")
+        let data = try encoder.encode(CacheInput(engine: engine, text: text, speechRate: speechRate, loginInfo: loginInfo))
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
@@ -365,6 +425,8 @@ public actor HttpTTSService {
     }
 
     private func validateContentType(engine: HttpTTS, response: HTTPResponse, contentType: String?) throws {
+        guard !response.data.isEmpty else { throw HttpTTSServiceError.emptyAudio }
+        guard response.data.count <= 64 * 1024 * 1024 else { throw HttpTTSServiceError.audioTooLarge }
         guard let contentType, !contentType.isEmpty else { return }
         if contentType == "application/json" || contentType.hasPrefix("text/") {
             throw HttpTTSServiceError.textResponse(contentType: contentType, body: response.decodedText)
@@ -384,9 +446,6 @@ public actor HttpTTSService {
 
     private func validateStreamContentType(engine: HttpTTS, contentType: String?) throws {
         guard let contentType, !contentType.isEmpty else { return }
-        if contentType == "application/json" || contentType.hasPrefix("text/") {
-            throw HttpTTSServiceError.textResponse(contentType: contentType, body: "TTS 返回了文本响应")
-        }
         guard let expected = engine.contentType?.trimmingCharacters(in: .whitespacesAndNewlines),
               !expected.isEmpty else { return }
         let expression = try NSRegularExpression(pattern: expected)
@@ -397,8 +456,92 @@ public actor HttpTTSService {
     }
 }
 
+public struct HttpTTSImportResult: Sendable {
+    public let engines: [HttpTTS]
+    public let notes: [HttpTTS]
+}
+
 public extension HttpTTS {
+    static func decodeImport(_ data: Data) throws -> [HttpTTS] { try inspectImport(data).engines }
+
+    static func inspectImport(_ data: Data) throws -> HttpTTSImportResult {
+        let decoder = JSONDecoder()
+        let values: [HttpTTS]
+        if let array = try? decoder.decode([HttpTTS].self, from: data) { values = array }
+        else if let engine = try? decoder.decode(HttpTTS.self, from: data) { values = [engine] }
+        else { throw BookSourceImportError.invalidDocument("无法识别朗读引擎 JSON，请检查内容或文件类型") }
+        guard !values.isEmpty else { throw BookSourceImportError.invalidDocument("文件中没有朗读引擎") }
+        let notes = values.filter { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || $0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let playable = values.filter { !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !$0.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !playable.isEmpty else {
+            throw BookSourceImportError.invalidDocument("没有可导入的朗读引擎，请确认内容包含名称和请求地址，且不是书源文件")
+        }
+        var seen = Set<Int64>()
+        return .init(engines: playable.reversed().filter { seen.insert($0.id).inserted }.reversed(), notes: notes)
+    }
+
+    static func openAICompatible(id: Int64, name: String, address: String) throws -> HttpTTS {
+        let input = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty,
+              var url = URLComponents(string: input.contains("://") ? input : "https://" + input),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host?.isEmpty == false,
+              url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
+            throw BookSourceImportError.invalidDocument("请输入 HTTP(S) 服务地址，不要在地址中填写密钥")
+        }
+        url.path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        url.path = url.path.isEmpty ? "/v1/audio/speech" : "/" + url.path
+        if !url.path.hasSuffix("/audio/speech") {
+            url.path += url.path.hasSuffix("/v1") ? "/audio/speech" : "/v1/audio/speech"
+        }
+        guard let endpoint = url.string else { throw URLError(.badURL) }
+        let literal = String(decoding: try JSONEncoder().encode(endpoint + ","), as: UTF8.self)
+        var engine = HttpTTS(id: id, name: name.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !engine.name.isEmpty else { throw BookSourceImportError.invalidDocument("请填写引擎名称") }
+        // Home's Edge TTS backend supports at most 2×; higher rates silently fall back to 1×.
+        engine.url = """
+        @js:var info = source.getLoginInfoMap();
+        \(literal) + JSON.stringify({method:"POST",body:{model:"tts-1",input:speakText,
+        voice:info.get("voice") || "zh-CN-YunxiNeural",response_format:"mp3",
+        speed:Math.min(2,Math.max(0.5,Number(speakSpeed)/10))}});
+        """
+        engine.contentType = "audio/mpeg"
+        engine.header = #"@js:var key = source.getLoginInfoMap().get("apiKey"); JSON.stringify(key ? {Authorization:"Bearer " + key} : {});"#
+        engine.loginUi = #"[{"name":"apiKey","type":"password","viewName":"'API Key（无鉴权可留空）'"},{"name":"voice","type":"text","default":"zh-CN-YunxiNeural","viewName":"'音色 ID'"}]"#
+        return engine
+    }
+
     var sourceKey: String { "httpTts:\(id)" }
+
+    var openAIServiceAddress: String? {
+        guard let range = serviceAddressRange,
+              let literal = String(url[range]).data(using: .utf8),
+              let address = try? JSONDecoder().decode(String.self, from: literal), address.hasSuffix(","),
+              let endpoint = URLComponents(string: String(address.dropLast())),
+              ["https", "http"].contains(endpoint.scheme ?? ""), endpoint.host?.isEmpty == false,
+              endpoint.user == nil, endpoint.password == nil, endpoint.query == nil, endpoint.fragment == nil,
+              endpoint.path.hasSuffix("/audio/speech") else { return nil }
+        return String(address.dropLast())
+    }
+
+    func updatingOpenAIServiceAddress(_ address: String) throws -> HttpTTS {
+        let generated = try Self.openAICompatible(id: id, name: name, address: address)
+        guard openAIServiceAddress != nil, let range = serviceAddressRange,
+              let endpoint = generated.openAIServiceAddress else {
+            throw BookSourceImportError.invalidDocument("此引擎请使用高级规则编辑")
+        }
+        var updated = self
+        updated.url.replaceSubrange(range, with: String(decoding: try JSONEncoder().encode(endpoint + ","), as: UTF8.self))
+        return updated
+    }
+
+    private var serviceAddressRange: Range<String.Index>? {
+        guard url.contains("source.getLoginInfoMap()"), url.contains("get(\"voice\")"),
+              header?.contains("get(\"apiKey\")") == true, jsLib?.isEmpty != false,
+              loginUrl?.isEmpty != false, loginCheckJs?.isEmpty != false,
+              let expression = try? NSRegularExpression(pattern: #"("(?:\\.|[^"\\])*")\s*\+\s*JSON\.stringify"#),
+              let match = expression.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) else { return nil }
+        return Range(match.range(at: 1), in: url)
+    }
 
     var bookSourceAdapter: BookSource {
         var source = BookSource(bookSourceUrl: sourceKey, bookSourceName: name)

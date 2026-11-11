@@ -83,6 +83,13 @@ final class ReadingActivityModel: ObservableObject {
         }
     }
 
+    func applySyncedActivity(bookmarks incoming: [Bookmark], records: [ReadRecord]) async throws {
+        let sorted = service.sortedBookmarks(incoming)
+        if bookmarks != sorted { await persistBookmarks(sorted) }
+        if Set(readRecords) != Set(records) { await persistRecords(records) }
+        guard bookmarks == sorted, Set(readRecords) == Set(records) else { throw CocoaError(.fileWriteUnknown) }
+    }
+
     func bookmarks(for book: Book) -> [Bookmark] {
         bookmarks.filter { $0.bookName == book.name && $0.bookAuthor == book.author }
             .sorted {

@@ -5,54 +5,178 @@ struct ReaderTextPage {
     let glyphRange: NSRange
     let offset: CGFloat
     let visibleHeight: CGFloat
+    var secondOffset: CGFloat?
 }
 
 @MainActor
-enum ReaderChapterSnapshot {
-    static func capture(_ view: UIView, excluding overlay: UIView? = nil) -> UIImageView? {
-        guard let window = view.window, view.bounds.width > 0, view.bounds.height > 0 else { return nil }
-        let viewport = view.convert(view.bounds, to: window)
+enum ReaderPageRenderer {
+    static func render(_ view: ReaderLayoutTextView, color: UIColor, image: UIImage? = nil,
+                       imageFrame: CGRect = .zero) -> UIImageView? {
+        guard view.bounds.width > 0, view.bounds.height > 0 else { return nil }
+        view.updatePagination()
         let format = UIGraphicsImageRendererFormat()
-        format.scale = window.screen.scale
+        format.scale = max(view.traitCollection.displayScale, 1)
         format.opaque = true
-        // A page's text mask must not make its unused area transparent. Render
-        // the complete viewport, including the reader background underneath it.
-        // Temporarily exclude the outgoing cover without committing a frame.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let hidden = overlay?.layer.isHidden
-        overlay?.layer.isHidden = true
-        defer {
-            if let hidden { overlay?.layer.isHidden = hidden }
-            CATransaction.commit()
-        }
-        let image = UIGraphicsImageRenderer(size: view.bounds.size, format: format).image { context in
-            let background = view.backgroundColor ?? .clear
-            (background.cgColor.alpha > 0 ? background : (window.backgroundColor ?? .systemBackground)).setFill()
+        let bitmap = UIGraphicsImageRenderer(size: view.bounds.size, format: format).image { context in
+            (color.cgColor.alpha > 0 ? color : .systemBackground).setFill()
             context.fill(CGRect(origin: .zero, size: view.bounds.size))
-            context.cgContext.translateBy(x: -viewport.minX, y: -viewport.minY)
-            window.layer.render(in: context.cgContext)
+            if let image, image.size.width > 0, image.size.height > 0 {
+                let frame = imageFrame.isEmpty ? CGRect(origin: .zero, size: view.bounds.size) : imageFrame
+                let scale = max(frame.width / image.size.width, frame.height / image.size.height)
+                let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+                image.draw(in: CGRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2,
+                                      width: size.width, height: size.height))
+            }
+            view.drawPageText(in: context.cgContext)
         }
-        let snapshot = UIImageView(image: image)
-        snapshot.isOpaque = true
-        snapshot.isUserInteractionEnabled = false
-        return snapshot
+        let page = UIImageView(image: bitmap)
+        page.isOpaque = true
+        page.isUserInteractionEnabled = false
+        return page
+    }
+}
+
+enum ReaderPageTurnState: Equatable {
+    case idle
+    case waiting(contentKey: Int, offset: CGFloat, direction: Int)
+    case animating
+
+    var isBusy: Bool { self != .idle }
+
+    mutating func begin(contentKey: Int, offset: CGFloat) -> Int? {
+        guard case let .waiting(source, sourceOffset, direction) = self,
+              source != contentKey || abs(sourceOffset - offset) > 0.001 else { return nil }
+        self = .animating
+        return direction
+    }
+}
+
+@MainActor
+final class ReaderPageTransition {
+    private(set) var state = ReaderPageTurnState.idle
+    private var cover: UIView?
+    private(set) var animator: UIViewPropertyAnimator?
+    private var usesTwoPages = false
+
+    func prepare(_ direction: Int, sourceKey: Int, in view: UIView, render: () -> UIImageView?) {
+        if case let .waiting(source, offset, _) = state, source == sourceKey, abs(offset - view.bounds.minY) < 0.001 {
+            state = .waiting(contentKey: sourceKey, offset: offset, direction: direction)
+            return
+        }
+        cancel()
+        guard let host = view.superview, let page = render() else { return }
+        let cover = UIView(frame: view.convert(view.bounds, to: host))
+        cover.isUserInteractionEnabled = false
+        cover.clipsToBounds = true
+        page.frame = cover.bounds
+        cover.addSubview(page)
+        host.addSubview(cover)
+        self.cover = cover
+        usesTwoPages = (view as? ReaderLayoutTextView)?.usesTwoPages == true
+        state = .waiting(contentKey: sourceKey, offset: view.bounds.minY, direction: direction)
+    }
+
+    func finish(contentKey: Int, offset: CGFloat, style: Int, render: () -> UIImageView?) {
+        guard let cover, let direction = state.begin(contentKey: contentKey, offset: offset) else { return }
+        guard let oldPage = cover.subviews.first as? UIImageView, let newPage = render() else { cancel(); return }
+        newPage.frame = cover.bounds
+        cover.addSubview(newPage)
+        let completion: (Bool) -> Void = { [weak self, weak cover] _ in
+            guard let self, let cover, self.cover === cover else { return }
+            self.cancel()
+        }
+        let animator: UIViewPropertyAnimator
+        if usesTwoPages, style == 2 {
+            oldPage.isHidden = true
+            let midpoint = cover.bounds.width / 2
+            func half(_ page: UIImageView, right: Bool) -> UIView {
+                let half = UIView(frame: CGRect(x: right ? midpoint : 0, y: 0,
+                                               width: midpoint, height: cover.bounds.height))
+                half.layer.contents = page.image?.cgImage
+                half.layer.contentsRect = CGRect(x: right ? 0.5 : 0, y: 0, width: 0.5, height: 1)
+                half.layer.contentsScale = page.image?.scale ?? 1
+                half.layer.isDoubleSided = false
+                cover.addSubview(half)
+                return half
+            }
+            _ = half(oldPage, right: direction < 0)
+            let front = half(oldPage, right: direction > 0)
+            let back = half(newPage, right: direction < 0)
+            for face in [front, back] {
+                face.layer.shadowColor = UIColor.black.cgColor
+                face.layer.shadowOpacity = 0.18
+                face.layer.shadowRadius = 8
+                face.layer.shadowOffset = .zero
+                face.layer.shadowPath = UIBezierPath(rect: face.bounds).cgPath
+            }
+            front.layer.anchorPoint = CGPoint(x: direction > 0 ? 0 : 1, y: 0.5)
+            back.layer.anchorPoint = CGPoint(x: direction > 0 ? 1 : 0, y: 0.5)
+            front.layer.position = CGPoint(x: midpoint, y: cover.bounds.midY)
+            back.layer.position = front.layer.position
+            var perspective = CATransform3DIdentity
+            perspective.m34 = -1 / max(cover.bounds.width * 2, 1000)
+            cover.layer.sublayerTransform = perspective
+            // Exactly 180 degrees leaves the shortest rotation direction ambiguous.
+            let angle: CGFloat = (direction > 0 ? -1 : 1) * (.pi - 0.001)
+            back.transform3D = CATransform3DMakeRotation(-angle, 0, 1, 0)
+            animator = UIViewPropertyAnimator(duration: 0.5, curve: .easeInOut) {
+                front.transform3D = CATransform3DMakeRotation(angle, 0, 1, 0)
+                back.transform3D = CATransform3DIdentity
+            }
+        } else {
+            let distance = CGFloat(direction) * cover.bounds.width
+            switch style {
+            case 0, 1:
+                if style == 0, direction > 0 { cover.insertSubview(newPage, belowSubview: oldPage) }
+                else { newPage.transform = CGAffineTransform(translationX: distance, y: 0) }
+                animator = UIViewPropertyAnimator(duration: 0.3, curve: .easeInOut) {
+                    if style == 1 || direction > 0 { oldPage.transform = CGAffineTransform(translationX: -distance, y: 0) }
+                    newPage.transform = .identity
+                }
+            case 2:
+                newPage.isHidden = true
+                UIView.transition(with: cover, duration: 0.38,
+                                  options: direction > 0 ? .transitionCurlUp : .transitionCurlDown,
+                                  animations: { oldPage.isHidden = true; newPage.isHidden = false }, completion: completion)
+                return
+            default:
+                completion(true)
+                return
+            }
+        }
+        animator.addCompletion { _ in completion(true) }
+        self.animator = animator
+        animator.startAnimation()
+    }
+
+    func cancel() {
+        let oldCover = cover
+        cover = nil
+        state = .idle
+        usesTwoPages = false
+        if animator?.state == .active { animator?.stopAnimation(true) }
+        animator = nil
+        oldCover?.layer.removeAllAnimations()
+        oldCover?.removeFromSuperview()
     }
 }
 
 @MainActor
 enum ReaderTextPagination {
     static func pages(in view: UITextView) -> [ReaderTextPage] {
-        let manager = view.layoutManager
-        manager.ensureLayout(for: view.textContainer)
-        let height = max(view.bounds.height - view.textContainerInset.top - view.textContainerInset.bottom, 1)
-        let scale = max(view.traitCollection.displayScale, 1)
-        let text = view.textStorage.string as NSString
+        pages(manager: view.layoutManager, container: view.textContainer,
+              height: max(view.bounds.height - view.textContainerInset.top - view.textContainerInset.bottom, 1),
+              scale: max(view.traitCollection.displayScale, 1))
+    }
+
+    static func pages(manager: NSLayoutManager, container: NSTextContainer, height: CGFloat, scale: CGFloat = 1) -> [ReaderTextPage] {
+        manager.ensureLayout(for: container)
+        let text = (manager.textStorage?.string ?? "") as NSString
         var lines: [(range: NSRange, bounds: CGRect, blank: Bool)] = []
         manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { rect, used, _, range, _ in
             var bounds = rect
             if !used.isEmpty { bounds = bounds.union(used) }
-            let ink = manager.boundingRect(forGlyphRange: range, in: view.textContainer)
+            let ink = manager.boundingRect(forGlyphRange: range, in: container)
             if !ink.isEmpty { bounds = bounds.union(ink) }
             let characters = manager.characterRange(forGlyphRange: range, actualGlyphRange: nil)
             let blank = text.substring(with: characters).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -98,7 +222,56 @@ enum ReaderTextPagination {
     }
 }
 
-final class ReaderLayoutTextView: UITextView {
+class ReaderSelectableTextView: UITextView, UITextViewDelegate {
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        if let textContainer { super.init(frame: frame, textContainer: textContainer) }
+        else {
+            let storage = NSTextStorage()
+            let manager = NSLayoutManager()
+            let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+            storage.addLayoutManager(manager)
+            manager.addTextContainer(container)
+            super.init(frame: frame, textContainer: container)
+        }
+    }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+    var onAddPurification: ((String) -> Void)?
+
+    @objc private func addPurificationRule() {
+        guard selectedRange.length > 0, NSMaxRange(selectedRange) <= textStorage.length else { return }
+        let selected = (textStorage.string as NSString).substring(with: selectedRange)
+        selectedRange = NSRange(location: 0, length: 0)
+        resignFirstResponder()
+        onAddPurification?(selected)
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(addPurificationRule) { return selectedRange.length > 0 && onAddPurification != nil }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        if #unavailable(iOS 16.0) {
+            UIMenuController.shared.menuItems = [UIMenuItem(title: "添加净化规则", action: #selector(addPurificationRule))]
+        }
+        return super.becomeFirstResponder()
+    }
+
+    @available(iOS 16.0, *)
+    func selectionMenu(for range: NSRange) -> UIMenu {
+        UIMenu(children: [
+            UIAction(title: "复制", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in self?.copy(nil) },
+            UIAction(title: "添加净化规则", image: UIImage(systemName: "line.3.horizontal.decrease.circle")) { [weak self] _ in self?.addPurificationRule() }
+        ])
+    }
+
+    @available(iOS 16.0, *)
+    func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        selectionMenu(for: range)
+    }
+}
+
+final class ReaderLayoutTextView: ReaderSelectableTextView {
     init() {
         let storage = NSTextStorage()
         let manager = NSLayoutManager()
@@ -112,7 +285,18 @@ final class ReaderLayoutTextView: UITextView {
         super.init(coder: coder)
     }
 
+    var hasTextSelection: Bool { selectedRange.length > 0 || (facingPage?.selectedRange.length ?? 0) > 0 }
     var paginates = false
+    var usesTwoPages = false {
+        didSet { if usesTwoPages != oldValue { invalidatePagination() } }
+    }
+    var spreadStartCharacter = 0 {
+        didSet { if spreadStartCharacter != oldValue { invalidatePagination() } }
+    }
+    var continuationText: NSAttributedString? {
+        didSet { invalidatePagination() }
+    }
+    var continuationBodyStart = 0
     var onLayout: ((UITextView) -> Void)?
     private(set) var pages: [ReaderTextPage] = []
     private var paginationDirty = true
@@ -124,6 +308,31 @@ final class ReaderLayoutTextView: UITextView {
     private let pageMask = CAShapeLayer()
     private var reportedSize = CGSize.zero
     private var reportedContentSize = CGSize.zero
+    private var facingPage: ReaderLayoutTextView?
+    private var facingContinuation = false
+    private var startsWithSinglePage = false
+
+    var firstSpreadOffset: CGFloat {
+        pages.isEmpty ? 0 : pages[startsWithSinglePage ? min(1, pages.count - 1) : 0].offset
+    }
+
+    var continuationPosition: Int? {
+        guard facingContinuation, let right = facingPage, let page = right.pages.first else { return nil }
+        let range = right.layoutManager.characterRange(forGlyphRange: page.glyphRange, actualGlyphRange: nil)
+        return max(NSMaxRange(range) - continuationBodyStart, 0)
+    }
+
+    private var columnWidth: CGFloat { usesTwoPages ? max((bounds.width - 24) / 2, 1) : bounds.width }
+
+    private func updateColumnWidth() {
+        if textContainer.widthTracksTextView != !usesTwoPages {
+            textContainer.widthTracksTextView = !usesTwoPages
+        }
+        if usesTwoPages {
+            let width = max(columnWidth - textContainerInset.left - textContainerInset.right, 1)
+            if textContainer.size.width != width { textContainer.size.width = width }
+        }
+    }
 
     override var contentSize: CGSize {
         get { super.contentSize }
@@ -149,6 +358,9 @@ final class ReaderLayoutTextView: UITextView {
     func updatePagination() -> Bool {
         guard paginates else {
             layer.mask = nil
+            facingPage?.removeFromSuperview()
+            facingPage = nil
+            facingContinuation = false
             pages = []
             paginationDirty = true
             return false
@@ -156,10 +368,54 @@ final class ReaderLayoutTextView: UITextView {
         guard !isUpdatingPagination, bounds.width > 0, bounds.height > 0 else { return false }
         isUpdatingPagination = true
         defer { isUpdatingPagination = false }
+        updateColumnWidth()
         let changed = paginationDirty || paginationSize != bounds.size || paginationInsets != textContainerInset
             || paginationWidth != textContainer.size.width
         if changed {
             pages = ReaderTextPagination.pages(in: self)
+            startsWithSinglePage = false
+            if usesTwoPages {
+                let leaves = pages
+                let character = min(max(spreadStartCharacter, 0), max(textStorage.length - 1, 0))
+                let glyph = textStorage.length > 0 ? layoutManager.glyphIndexForCharacter(at: character) : 0
+                startsWithSinglePage = ReaderTextPagination.index(containing: glyph, pages: leaves) % 2 == 1
+                pages = []
+                var index = 0
+                while index < leaves.count {
+                    var page = leaves[index]
+                    let pairsNext = !(index == 0 && startsWithSinglePage) && index + 1 < leaves.count
+                    if pairsNext {
+                        let second = leaves[index + 1]
+                        page = ReaderTextPage(glyphRange: NSUnionRange(page.glyphRange, second.glyphRange),
+                                              offset: page.offset, visibleHeight: page.visibleHeight,
+                                              secondOffset: second.offset)
+                    }
+                    pages.append(page)
+                    index += pairsNext ? 2 : 1
+                }
+                let right = facingPage ?? ReaderLayoutTextView()
+                right.paginates = true
+                right.scrollsToTop = false
+                right.isEditable = false
+                right.isSelectable = isSelectable
+                right.isUserInteractionEnabled = isSelectable
+                right.onAddPurification = onAddPurification
+                right.delegate = right
+                right.accessibilityElementsHidden = true
+                right.contentInsetAdjustmentBehavior = .never
+                right.textContainerInset = textContainerInset
+                right.textContainer.lineFragmentPadding = textContainer.lineFragmentPadding
+                right.backgroundColor = .clear
+                right.isOpaque = false
+                right.attributedText = attributedText
+                right.invalidatePagination()
+                facingContinuation = false
+                if facingPage == nil { addSubview(right); facingPage = right }
+            } else {
+                facingPage?.removeFromSuperview()
+                facingPage = nil
+                facingContinuation = false
+            }
             paginationDirty = false
             paginationSize = bounds.size
             paginationInsets = textContainerInset
@@ -175,17 +431,56 @@ final class ReaderLayoutTextView: UITextView {
         guard paginates, !pages.isEmpty else { layer.mask = nil; return }
         let page = pages[ReaderTextPagination.index(at: contentOffset.y, pages: pages)]
         let height = min(max(page.offset + page.visibleHeight - contentOffset.y, 0), bounds.height)
+        let path = UIBezierPath(rect: CGRect(x: 0, y: textContainerInset.top, width: columnWidth, height: height))
+        if let right = facingPage {
+            right.frame = CGRect(x: columnWidth + 24, y: bounds.minY, width: columnWidth, height: bounds.height)
+            let showsContinuation = page.secondOffset == nil && NSMaxRange(page.glyphRange) == layoutManager.numberOfGlyphs
+                && continuationText != nil
+            if showsContinuation != facingContinuation {
+                right.attributedText = showsContinuation ? continuationText : attributedText
+                right.invalidatePagination()
+                facingContinuation = showsContinuation
+            }
+            right.isHidden = page.secondOffset == nil && !showsContinuation
+            if let offset = page.secondOffset ?? (showsContinuation ? 0 : nil) {
+                right.layoutIfNeeded()
+                right.updatePagination()
+                right.setContentOffset(CGPoint(x: 0, y: offset), animated: false)
+                right.updatePageMask()
+                path.append(UIBezierPath(rect: CGRect(x: columnWidth + 24, y: textContainerInset.top,
+                                                      width: columnWidth, height: bounds.height)))
+            }
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         pageMask.frame = bounds
-        pageMask.path = UIBezierPath(rect: CGRect(x: 0, y: textContainerInset.top, width: bounds.width, height: height)).cgPath
+        pageMask.path = path.cgPath
         layer.mask = pageMask
         CATransaction.commit()
+    }
+
+    func drawPageText(in context: CGContext) {
+        guard !pages.isEmpty else { return }
+        let page = pages[ReaderTextPagination.index(at: contentOffset.y, pages: pages)]
+        let height = min(max(page.offset + page.visibleHeight - contentOffset.y, 0), bounds.height)
+        context.saveGState()
+        context.clip(to: CGRect(x: 0, y: textContainerInset.top, width: columnWidth, height: height))
+        let origin = CGPoint(x: textContainerInset.left, y: textContainerInset.top - contentOffset.y)
+        layoutManager.drawBackground(forGlyphRange: page.glyphRange, at: origin)
+        layoutManager.drawGlyphs(forGlyphRange: page.glyphRange, at: origin)
+        context.restoreGState()
+        if let right = facingPage, !right.isHidden {
+            context.saveGState()
+            context.translateBy(x: columnWidth + 24, y: 0)
+            right.drawPageText(in: context)
+            context.restoreGState()
+        }
     }
 
     override func layoutSubviews() {
         guard !isUpdatingLayout else { return }
         isUpdatingLayout = true
+        updateColumnWidth()
         super.layoutSubviews()
         isUpdatingLayout = false
         guard !isUpdatingPagination else { return }
@@ -238,6 +533,12 @@ struct ReaderTextView: UIViewRepresentable {
     let renderRevision: Int
     var chapterRevision = 0
     var chapterIndex = 0
+    var usesTwoPages = false
+    var spreadStartPosition = 0
+    var previousSpreadChapter: Int?
+    var pageBackgroundColor: UIColor?
+    var pageBackgroundImage: UIImage?
+    var pageBackgroundFrame = CGRect.zero
     @Binding var readerPosition: Int
     @Binding var pageRanges: [NSRange]
     @Binding var currentPage: Int
@@ -247,13 +548,19 @@ struct ReaderTextView: UIViewRepresentable {
     let isLoadingNextChapter: Bool
     let secondsPerScreen: Double
     let onReachedEnd: (Int) -> Void
-    let onReachedStart: (Int) -> Void
+    let onReachedStart: (Int, Int?) -> Void
     let onEnteredPrevious: (Int) -> Void
-    let onEnteredContinuation: (Int) -> Void
+    let onEnteredContinuation: (Int) -> Bool
     let onDeferredRender: () -> Void
     let onCancelNextLoading: () -> Void
     let onPageChanged: () -> Void
     let onTapAction: (Int) -> Void
+    var onAddPurification: ((String) -> Void)? = nil
+    var tapX1 = 1.0 / 3
+    var tapX2 = 2.0 / 3
+    var tapY1 = 1.0 / 3
+    var tapY2 = 2.0 / 3
+    var scrollsToTop = false
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -265,6 +572,7 @@ struct ReaderTextView: UIViewRepresentable {
             guard let coordinator else { return }
             let previousSize = coordinator.lastViewportSize
             coordinator.lastViewportSize = view.bounds.size
+            if previousSize != .zero, previousSize != view.bounds.size { coordinator.cancelTransitions() }
             if coordinator.hasPendingScroll {
                 coordinator.applyPendingScroll(in: view)
                 return
@@ -279,12 +587,15 @@ struct ReaderTextView: UIViewRepresentable {
         view.accessibilityIdentifier = "reader.text"
         let effectivePageAnimation = isEInkMode ? 4 : pageAnimation
         view.paginates = effectivePageAnimation != 3
+        view.usesTwoPages = usesTwoPages && view.paginates
         view.backgroundColor = backgroundColor
         view.isOpaque = backgroundColor != .clear
         view.delegate = context.coordinator
         view.contentInsetAdjustmentBehavior = .never
         view.isEditable = false
-        view.isSelectable = false
+        view.scrollsToTop = scrollsToTop
+        view.isSelectable = isSelectable
+        (view as? ReaderSelectableTextView)?.onAddPurification = onAddPurification
         view.alwaysBounceVertical = effectivePageAnimation == 3
         view.isScrollEnabled = true
         view.panGestureRecognizer.isEnabled = effectivePageAnimation == 3
@@ -303,11 +614,17 @@ struct ReaderTextView: UIViewRepresentable {
         let viewportSizeChanged = view.bounds.size != .zero
             && context.coordinator.lastViewportSize != view.bounds.size
         if viewportSizeChanged {
+            context.coordinator.cancelTransitions()
             context.coordinator.lastViewportSize = view.bounds.size
         }
         let effectivePageAnimation = isEInkMode ? 4 : pageAnimation
+        if context.coordinator.renderedPageAnimation != effectivePageAnimation {
+            context.coordinator.cancelTransitions()
+            context.coordinator.renderedPageAnimation = effectivePageAnimation
+        }
         if let layoutView = view as? ReaderLayoutTextView {
             layoutView.paginates = effectivePageAnimation != 3
+            layoutView.usesTwoPages = usesTwoPages && layoutView.paginates
         }
         if viewportSizeChanged {
             view.layoutManager.invalidateLayout(
@@ -315,7 +632,9 @@ struct ReaderTextView: UIViewRepresentable {
                 actualCharacterRange: nil
             )
         }
-        view.isSelectable = false
+        view.scrollsToTop = scrollsToTop
+        view.isSelectable = isSelectable
+        (view as? ReaderSelectableTextView)?.onAddPurification = onAddPurification
         view.alwaysBounceVertical = effectivePageAnimation == 3
         view.isScrollEnabled = true
         view.panGestureRecognizer.isEnabled = effectivePageAnimation == 3
@@ -325,9 +644,9 @@ struct ReaderTextView: UIViewRepresentable {
         context.coordinator.updateInteractionMode(on: view, isScrollMode: effectivePageAnimation == 3)
         view.backgroundColor = backgroundColor
         view.isOpaque = backgroundColor != .clear
-        view.isSelectable = false
-        view.selectedRange = NSRange(location: 0, length: 0)
-        view.resignFirstResponder()
+        view.scrollsToTop = scrollsToTop
+        view.isSelectable = isSelectable
+        (view as? ReaderSelectableTextView)?.onAddPurification = onAddPurification
         view.textContainerInset = .init(
             top: CGFloat(paddingTop + headerInset),
             left: CGFloat(paddingLeft),
@@ -337,13 +656,14 @@ struct ReaderTextView: UIViewRepresentable {
         let contentKey = text.hashValue
         let primaryContentKey = "\(chapterRevision)|\(title)|\(text)".hashValue
         let showsContinuation = effectivePageAnimation == 3 && isContinuationReady && continuationTitle != nil
+        let showsFacingContinuation = usesTwoPages && isContinuationReady && continuationTitle != nil && !continuationText.isEmpty
         let showsPrevious = showsContinuation && isPreviousReady && previousTitle != nil
-        let adjacentContentKey = showsPrevious || showsContinuation
+        let adjacentContentKey = showsPrevious || showsContinuation || showsFacingContinuation
             ? "\(showsPrevious)|\(previousTitle ?? "")|\(previousText)|\(showsContinuation)|\(continuationTitle ?? "")|\(continuationText)".hashValue : 0
         let displaysTitle = titleMode != 2 || isVolume
         let titlePrefix = displaysTitle && !title.isEmpty ? title + "\n" : ""
-        let styleKey = "\(chapterRevision)|\(contentKey)|\(adjacentContentKey)|\(title)|\(isVolume)|\(fontSize)|\(fontPath)|\(letterSpacing)|\(lineSpacing)|\(paragraphSpacing)|\(paragraphIndent)|\(paddingLeft)|\(paddingRight)|\(paddingTop)|\(paddingBottom)|\(headerInset)|\(footerInset)|\(fontWeight)|\(titleMode)|\(titleSize)|\(titleTopSpacing)|\(titleBottomSpacing)|\(underlineMode)|\(isSelectable)|\(fullJustify)|\(effectivePageAnimation)|\(foregroundColor.hash)"
-        if context.coordinator.styleKey != styleKey {
+        let styleKey = "\(chapterRevision)|\(contentKey)|\(usesTwoPages)|\(title)|\(isVolume)|\(fontSize)|\(fontPath)|\(letterSpacing)|\(lineSpacing)|\(paragraphSpacing)|\(paragraphIndent)|\(paddingLeft)|\(paddingRight)|\(paddingTop)|\(paddingBottom)|\(headerInset)|\(footerInset)|\(fontWeight)|\(titleMode)|\(titleSize)|\(titleTopSpacing)|\(titleBottomSpacing)|\(underlineMode)|\(isSelectable)|\(fullJustify)|\(effectivePageAnimation)|\(foregroundColor.hash)"
+        if context.coordinator.styleKey != styleKey || context.coordinator.adjacentContentKey != adjacentContentKey {
             if context.coordinator.shouldDeferRender(in: view) {
                 context.coordinator.needsDeferredRender = true
                 return
@@ -351,14 +671,15 @@ struct ReaderTextView: UIViewRepresentable {
             let primaryContentChanged = context.coordinator.primaryContentKey != primaryContentKey
             if primaryContentChanged, effectivePageAnimation != 3,
                let oldIndex = context.coordinator.displayedChapterIndex, oldIndex != chapterIndex {
-                context.coordinator.prepareChapterTurn(chapterIndex > oldIndex ? 1 : -1, in: view)
-            }
+                context.coordinator.preparePageTurn(chapterIndex > oldIndex ? 1 : -1, in: view)
+            } else if context.coordinator.styleKey != styleKey { context.coordinator.cancelTransitions() }
             context.coordinator.displayedChapterIndex = chapterIndex
             let visiblePosition = context.coordinator.contentCharacter(at: view.contentOffset, in: view)
             context.coordinator.resetAutoReadForPageChange()
             context.coordinator.resetPageRangeRetry()
             context.coordinator.contentKey = contentKey
             context.coordinator.primaryContentKey = primaryContentKey
+            context.coordinator.adjacentContentKey = adjacentContentKey
             context.coordinator.styleKey = styleKey
             let typography = ReaderTypography(configuration: self)
             let bodyAttributes = typography.bodyAttributes
@@ -396,6 +717,19 @@ struct ReaderTextView: UIViewRepresentable {
                     attributes: bodyAttributes
                 ))
             }
+            if let layoutView = view as? ReaderLayoutTextView {
+                layoutView.spreadStartCharacter = context.coordinator.renderedPrefixLength
+                    + min(max(spreadStartPosition, 0), text.utf16.count)
+                if showsFacingContinuation {
+                    let next = NSMutableAttributedString(string: titleMode != 2 ? (continuationTitle ?? "") + "\n" : "",
+                                                         attributes: typography.headingAttributes)
+                    layoutView.continuationBodyStart = next.length
+                    next.append(NSAttributedString(string: continuationText, attributes: bodyAttributes))
+                    layoutView.continuationText = next
+                } else {
+                    layoutView.continuationText = nil
+                }
+            }
             context.coordinator.isApplyingContent = true
             (view as? ReaderLayoutTextView)?.invalidatePagination()
             view.attributedText = rendered
@@ -420,6 +754,7 @@ struct ReaderTextView: UIViewRepresentable {
             }
         }
         if let jumpPosition, context.coordinator.lastJumpPosition != jumpPosition {
+            context.coordinator.cancelTransitions()
             context.coordinator.lastJumpPosition = jumpPosition
             context.coordinator.scroll(to: jumpPosition, in: view)
         } else if jumpPosition == nil {
@@ -447,7 +782,9 @@ struct ReaderTextView: UIViewRepresentable {
         var parent: ReaderTextView
         var contentKey = 0
         var primaryContentKey = 0
+        var adjacentContentKey = 0
         var displayedChapterIndex: Int?
+        var renderedPageAnimation: Int?
         var styleKey = ""
         var renderedPrefixLength = 0
         var currentSectionStart = 0
@@ -479,11 +816,7 @@ struct ReaderTextView: UIViewRepresentable {
         private var pendingContinuationPosition: Int?
         var needsDeferredRender = false
         var isApplyingContent = false
-        private var isTurningPage = false
-        private var chapterTurnCover: UIView?
-        private var chapterTurnDirection = 0
-        private var chapterTurnContentKey: Int?
-        private var isAnimatingChapterTurn = false
+        let pageTransition = ReaderPageTransition()
         private var isRenderingAutoPage = false
         private var lastReportedPage: Int?
         private var autoPageProgress: CGFloat = 0
@@ -515,9 +848,11 @@ struct ReaderTextView: UIViewRepresentable {
             view.addGestureRecognizer(tap)
             readerTap = tap
             let next = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
+            next.delegate = self
             next.direction = .left
             view.addGestureRecognizer(next)
             let previous = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
+            previous.delegate = self
             previous.direction = .right
             view.addGestureRecognizer(previous)
             nextSwipe = next
@@ -529,6 +864,15 @@ struct ReaderTextView: UIViewRepresentable {
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool {
             gestureRecognizer === readerTap || otherGestureRecognizer === readerTap
+        }
+
+        @available(iOS 16.0, *)
+        func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+            (textView as? ReaderSelectableTextView)?.selectionMenu(for: range)
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            (textView as? ReaderLayoutTextView)?.hasTextSelection != true
         }
 
         func updateInteractionMode(on view: UITextView, isScrollMode: Bool) {
@@ -588,7 +932,7 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         func invalidate() {
-            clearChapterTurn()
+            pageTransition.cancel()
             layoutGeneration &+= 1
             pendingScrollPosition = nil
             resetAutoPage()
@@ -676,7 +1020,7 @@ struct ReaderTextView: UIViewRepresentable {
             pendingScrollPosition = nil
             reportPage(in: view)
             reportPageRanges(in: view)
-            completeChapterTurn(in: view)
+            animatePageTurn(in: view)
             return true
         }
 
@@ -717,7 +1061,8 @@ struct ReaderTextView: UIViewRepresentable {
 
         private func scrollLimits(for view: UITextView) -> (minimum: CGFloat, maximum: CGFloat) {
             if usesPagination {
-                return (0, pageLayout(in: view).last?.offset ?? 0)
+                let pages = pageLayout(in: view)
+                return ((view as? ReaderLayoutTextView)?.firstSpreadOffset ?? 0, pages.last?.offset ?? 0)
             }
             let minimum = -view.adjustedContentInset.top
             let maximum = max(
@@ -801,7 +1146,7 @@ struct ReaderTextView: UIViewRepresentable {
                 )
                 if view.contentOffset.y < textBottom - 44 {
                     didRequestLoadingCancellation = true
-                    clearChapterTurn()
+                    pageTransition.cancel()
                     DispatchQueue.main.async { [weak self] in self?.parent.onCancelNextLoading() }
                 }
             }
@@ -856,7 +1201,7 @@ struct ReaderTextView: UIViewRepresentable {
                 let generation = layoutGeneration
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.layoutGeneration == generation else { return }
-                    self.parent.onEnteredContinuation(position)
+                    _ = self.parent.onEnteredContinuation(position)
                 }
                 return
             }
@@ -989,7 +1334,7 @@ struct ReaderTextView: UIViewRepresentable {
                 didEnterContinuation = true
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.layoutGeneration == generation else { return }
-                    self.parent.onEnteredContinuation(continuation)
+                    _ = self.parent.onEnteredContinuation(continuation)
                 }
             }
         }
@@ -1005,12 +1350,12 @@ struct ReaderTextView: UIViewRepresentable {
             } else if atStart, dragDirection < 0, previousBodyStart == nil, !didReachStart {
                 didReachStart = true
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                parent.onReachedStart(contentCharacter(at: view.contentOffset, in: view))
+                parent.onReachedStart(contentCharacter(at: view.contentOffset, in: view), nil)
             }
         }
 
         @objc private func tapped(_ gesture: UITapGestureRecognizer) {
-            guard let view = textView, gesture.state == .ended else { return }
+            guard let view = textView, gesture.state == .ended, (view as? ReaderLayoutTextView)?.hasTextSelection != true else { return }
             let point = gesture.location(in: view)
             // UIScrollView changes its bounds origin as content scrolls, and
             // gesture locations use that content coordinate space. Convert
@@ -1018,10 +1363,10 @@ struct ReaderTextView: UIViewRepresentable {
             // into the 3×3 tap grid.
             let viewportX = point.x - view.bounds.minX
             let viewportY = point.y - view.bounds.minY
-            let column = min(max(Int(viewportX / max(view.bounds.width / 3, 1)), 0), 2)
-            let row = min(max(Int(viewportY / max(view.bounds.height / 3, 1)), 0), 2)
-            let index = row * 3 + column
-            let action = index == 4
+            let index = ReaderTapZones.index(x: viewportX, y: viewportY, size: view.bounds.size,
+                                              x1: parent.tapX1, x2: parent.tapX2, y1: parent.tapY1, y2: parent.tapY2)
+            let column = index % 3
+            let action = index == 4 || (parent.usesTwoPages && column == 1)
                 ? 0
                 : (parent.clickActions.indices.contains(index) ? parent.clickActions[index] : 0)
 
@@ -1041,122 +1386,56 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         private func turnPage(_ direction: Int) {
-            guard !isTurningPage, let view = textView else { return }
+            guard !hasPendingScroll, !pageTransition.state.isBusy, let view = textView else { return }
             if isAutoReading { resetAutoReadForPageChange() }
             let (minimum, maximum) = scrollLimits(for: view)
             let target = adjacentPageOffset(direction, in: view)
             if direction < 0, view.contentOffset.y <= minimum + 0.5 {
-                if parent.previousTitle != nil { prepareChapterTurn(direction, in: view) }
-                parent.onReachedStart(contentCharacter(at: view.contentOffset, in: view))
+                if parent.previousTitle != nil { preparePageTurn(direction, in: view) }
+                parent.onReachedStart(contentCharacter(at: view.contentOffset, in: view), parent.previousSpreadChapter)
                 return
             }
             if direction > 0, view.contentOffset.y >= maximum - 0.5 {
-                if parent.continuationTitle != nil { prepareChapterTurn(direction, in: view) }
+                finishChapter(in: view)
+                return
+            }
+            preparePageTurn(direction, in: view)
+            view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
+            view.layoutIfNeeded()
+            animatePageTurn(in: view)
+        }
+
+        private func finishChapter(in view: UITextView) {
+            if let position = (view as? ReaderLayoutTextView)?.continuationPosition {
+                if parent.onEnteredContinuation(position) { preparePageTurn(1, in: view) }
+            } else {
+                if parent.continuationTitle != nil { preparePageTurn(1, in: view) }
                 parent.onReachedEnd(contentCharacter(at: view.contentOffset, in: view))
-                return
-            }
-            isTurningPage = true
-            let completion: (Bool) -> Void = { [weak self] _ in self?.isTurningPage = false }
-            switch parent.isEInkMode ? 4 : parent.pageAnimation {
-            case 4:
-                view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
-                isTurningPage = false
-            case 0:
-                let transition = CATransition()
-                transition.duration = 0.3
-                transition.type = direction > 0 ? .reveal : .moveIn
-                transition.subtype = direction > 0 ? .fromRight : .fromLeft
-                view.layer.add(transition, forKey: "reader-cover")
-                view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.31) { [weak self] in self?.isTurningPage = false }
-            case 1:
-                let transition = CATransition()
-                transition.duration = 0.3
-                transition.type = .push
-                transition.subtype = direction > 0 ? .fromRight : .fromLeft
-                view.layer.add(transition, forKey: "reader-slide")
-                view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.31) { [weak self] in self?.isTurningPage = false }
-            case 2:
-                UIView.transition(
-                    with: view,
-                    duration: 0.38,
-                    options: direction > 0 ? .transitionCurlUp : .transitionCurlDown,
-                    animations: { view.setContentOffset(CGPoint(x: 0, y: target), animated: false) },
-                    completion: completion
-                )
-            default:
-                view.setContentOffset(CGPoint(x: 0, y: target), animated: true)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in self?.isTurningPage = false }
             }
         }
 
-        func prepareChapterTurn(_ direction: Int, in view: UITextView) {
-            guard chapterTurnCover == nil, usesPagination, !view.text.isEmpty, let host = view.superview,
-                  let snapshot = ReaderChapterSnapshot.capture(view) else { return }
-            clearChapterTurn()
-            let cover = UIView(frame: view.convert(view.bounds, to: host))
-            cover.isUserInteractionEnabled = false
-            cover.clipsToBounds = true
-            cover.backgroundColor = view.backgroundColor
-            snapshot.frame = cover.bounds
-            cover.addSubview(snapshot)
-            host.addSubview(cover)
-            chapterTurnCover = cover
-            chapterTurnDirection = direction
-            chapterTurnContentKey = primaryContentKey
-            isTurningPage = true
+        private func pageImage(in view: UITextView) -> UIImageView? {
+            guard let view = view as? ReaderLayoutTextView else { return nil }
+            let viewport = view.convert(view.bounds, to: nil)
+            let frame = parent.pageBackgroundFrame.isEmpty ? .zero
+                : parent.pageBackgroundFrame.offsetBy(dx: -viewport.minX, dy: -viewport.minY)
+            return ReaderPageRenderer.render(view, color: parent.pageBackgroundColor ?? parent.backgroundColor,
+                                             image: parent.pageBackgroundImage, imageFrame: frame)
         }
 
-        private func clearChapterTurn() {
-            chapterTurnCover?.removeFromSuperview()
-            chapterTurnCover = nil
-            chapterTurnContentKey = nil
-            isAnimatingChapterTurn = false
-            isTurningPage = false
+        func preparePageTurn(_ direction: Int, in view: UITextView) {
+            guard !parent.isEInkMode, (0...2).contains(parent.pageAnimation), !view.text.isEmpty else { return }
+            pageTransition.prepare(direction, sourceKey: primaryContentKey, in: view) { pageImage(in: view) }
         }
 
-        private func completeChapterTurn(in view: UITextView) {
-            guard let cover = chapterTurnCover, !isAnimatingChapterTurn,
-                  chapterTurnContentKey != primaryContentKey else { return }
-            guard let oldPage = cover.subviews.first,
-                  let newPage = ReaderChapterSnapshot.capture(view, excluding: cover) else {
-                clearChapterTurn()
-                return
-            }
-            isAnimatingChapterTurn = true
-            let direction = chapterTurnDirection
-            let distance = CGFloat(direction) * cover.bounds.width
-            newPage.frame = cover.bounds
-            cover.addSubview(newPage)
-            let completion: (Bool) -> Void = { [weak self, weak cover] _ in
-                guard let self, let cover, self.chapterTurnCover === cover else { return }
-                self.clearChapterTurn()
-            }
-            switch parent.isEInkMode ? 4 : parent.pageAnimation {
-            case 0:
-                if direction > 0 {
-                    cover.insertSubview(newPage, belowSubview: oldPage)
-                    UIView.animate(withDuration: 0.3, animations: {
-                        oldPage.transform = CGAffineTransform(translationX: -distance, y: 0)
-                    }, completion: completion)
-                } else {
-                    newPage.transform = CGAffineTransform(translationX: distance, y: 0)
-                    UIView.animate(withDuration: 0.3, animations: { newPage.transform = .identity }, completion: completion)
-                }
-            case 1:
-                newPage.transform = CGAffineTransform(translationX: distance, y: 0)
-                UIView.animate(withDuration: 0.3, animations: {
-                    oldPage.transform = CGAffineTransform(translationX: -distance, y: 0)
-                    newPage.transform = .identity
-                }, completion: completion)
-            case 2:
-                newPage.isHidden = true
-                UIView.transition(with: cover, duration: 0.38,
-                                  options: direction > 0 ? .transitionCurlUp : .transitionCurlDown,
-                                  animations: { oldPage.isHidden = true; newPage.isHidden = false }, completion: completion)
-            default:
-                completion(true)
+        func cancelTransitions() {
+            pageTransition.cancel()
+            resetAutoPage()
+        }
+
+        private func animatePageTurn(in view: UITextView) {
+            pageTransition.finish(contentKey: primaryContentKey, offset: view.contentOffset.y, style: parent.isEInkMode ? 4 : parent.pageAnimation) {
+                pageImage(in: view)
             }
         }
 
@@ -1178,20 +1457,21 @@ struct ReaderTextView: UIViewRepresentable {
             isRenderingAutoPage = true
             view.setContentOffset(CGPoint(x: 0, y: target), animated: false)
             view.layoutIfNeeded()
-            let renderer = UIGraphicsImageRenderer(bounds: view.bounds)
-            let image = renderer.image { context in view.layer.render(in: context.cgContext) }
+            let overlay = pageImage(in: view)
             view.setContentOffset(originalOffset, animated: false)
             view.layoutIfNeeded()
             isRenderingAutoPage = false
 
-            let overlay = UIImageView(image: image)
+            guard let overlay, let host = view.superview else { return false }
             overlay.isUserInteractionEnabled = false
             overlay.contentMode = .top
             overlay.clipsToBounds = true
             overlay.layer.borderColor = view.tintColor.cgColor
             overlay.layer.borderWidth = 0
-            overlay.frame = CGRect(x: 0, y: originalOffset.y, width: view.bounds.width, height: 0)
-            view.addSubview(overlay)
+            var frame = view.convert(view.bounds, to: host)
+            frame.size.height = 0
+            overlay.frame = frame
+            host.addSubview(overlay)
             autoPageOverlay = overlay
             autoPageTarget = target
             return true
@@ -1199,22 +1479,19 @@ struct ReaderTextView: UIViewRepresentable {
 
         private func advancePagedAutoRead(in view: UITextView, elapsed: CFTimeInterval) {
             if autoPageOverlay == nil, !prepareAutoPage(in: view) {
-                guard !didReachEnd else { return }
+                guard !didReachEnd, view.contentOffset.y >= scrollLimits(for: view).maximum - 0.5 else { return }
                 didReachEnd = true
-                parent.onReachedEnd(contentCharacter(at: view.contentOffset, in: view))
+                finishChapter(in: view)
                 return
             }
             didReachEnd = false
             let pageHeight = readingViewportHeight(for: view)
             autoPageProgress += pageHeight / CGFloat(secondsPerScreen) * CGFloat(elapsed)
             let revealedHeight = min(autoPageProgress, pageHeight)
-            if let overlay = autoPageOverlay {
-                overlay.frame = CGRect(
-                    x: 0,
-                    y: view.contentOffset.y,
-                    width: view.bounds.width,
-                    height: revealedHeight
-                )
+            if let overlay = autoPageOverlay, let host = overlay.superview {
+                var frame = view.convert(view.bounds, to: host)
+                frame.size.height = revealedHeight
+                overlay.frame = frame
                 overlay.layer.borderWidth = revealedHeight > 0 ? 0.5 : 0
             }
             guard autoPageProgress >= pageHeight, let target = autoPageTarget else { return }
@@ -1234,7 +1511,7 @@ struct ReaderTextView: UIViewRepresentable {
             guard view.contentOffset.y < maximum - 0.5 else {
                 guard !didReachEnd else { return }
                 didReachEnd = true
-                parent.onReachedEnd(contentCharacter(at: view.contentOffset, in: view))
+                finishChapter(in: view)
                 return
             }
             didReachEnd = false
@@ -1243,7 +1520,8 @@ struct ReaderTextView: UIViewRepresentable {
         }
 
         @objc private func step(_ link: CADisplayLink) {
-            guard isAutoReading, !isAutoReadPaused, !isUserDragging, let view = textView else {
+            guard isAutoReading, !isAutoReadPaused, !isUserDragging, !hasPendingScroll, !pageTransition.state.isBusy,
+                  let view = textView, view.window != nil, view.bounds.width > 0, view.bounds.height > 0 else {
                 lastTimestamp = link.timestamp
                 return
             }
@@ -1274,5 +1552,15 @@ struct ReaderTextView: UIViewRepresentable {
                 view.setContentOffset(CGPoint(x: 0, y: next), animated: false)
             }
         }
+    }
+}
+
+
+enum ReaderTapZones {
+    static func index(x: CGFloat, y: CGFloat, size: CGSize, x1: Double, x2: Double, y1: Double, y2: Double) -> Int {
+        let x = Double(x / max(size.width, 1)), y = Double(y / max(size.height, 1))
+        let column = x < x1 ? 0 : (x < x2 ? 1 : 2)
+        let row = y < y1 ? 0 : (y < y2 ? 1 : 2)
+        return row * 3 + column
     }
 }

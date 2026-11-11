@@ -5,6 +5,7 @@ import VisionKit
 
 struct QRCodeImportView: View {
     @Environment(\.dismiss) private var dismiss
+    var subject = "书源或净化规则"
     let onValue: (String) -> Void
     @State private var cameraAuthorized = false
     @State private var cameraMessage = "正在检查相机…"
@@ -21,7 +22,7 @@ struct QRCodeImportView: View {
                     cameraScanner
                         .clipShape(RoundedRectangle(cornerRadius: 18))
                         .overlay(alignment: .bottom) {
-                            Text("将书源或净化规则二维码放入取景框").font(.footnote)
+                            Text("将\(subject)二维码放入取景框").font(.footnote)
                                 .padding(10).background(.ultraThinMaterial, in: Capsule()).padding()
                         }
                 } else {

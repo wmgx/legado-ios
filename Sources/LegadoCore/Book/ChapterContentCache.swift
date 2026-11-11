@@ -46,21 +46,26 @@ public actor ChapterContentCache {
     public static let defaultMaximumTotalBytes = 256 * 1_024 * 1_024
 
     private let directory: URL
+    private let downloadsDirectory: URL
     private let maximumTotalBytes: Int?
 
-    public init(directory: URL, maximumTotalBytes: Int? = nil) {
+    public init(directory: URL, maximumTotalBytes: Int? = nil, downloadsDirectory: URL? = nil) {
         self.directory = directory
+        self.downloadsDirectory = downloadsDirectory ?? directory.appendingPathComponent("Downloads", isDirectory: true)
         self.maximumTotalBytes = maximumTotalBytes.map { max($0, Self.maximumEntryBytes) }
     }
 
     public static func live() -> ChapterContentCache {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Legado/Chapters", isDirectory: true)
-        return ChapterContentCache(directory: base)
+        let downloads = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Legado/Downloads", isDirectory: true)
+        return ChapterContentCache(directory: base, downloadsDirectory: downloads)
     }
 
     public func load(bookURL: String, chapterURL: String) throws -> CachedChapterContent? {
-        let url = fileURL(bookURL: bookURL, chapterURL: chapterURL)
+        let saved = fileURL(bookURL: bookURL, chapterURL: chapterURL, downloaded: true)
+        let url = FileManager.default.fileExists(atPath: saved.path) ? saved : fileURL(bookURL: bookURL, chapterURL: chapterURL)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         do {
             let value = try JSONDecoder().decode(CachedChapterContent.self, from: Data(contentsOf: url, options: .mappedIfSafe))
@@ -78,7 +83,7 @@ public actor ChapterContentCache {
         }
     }
 
-    public func save(_ entry: CachedChapterContent) throws {
+    public func save(_ entry: CachedChapterContent, downloaded: Bool = false) throws {
         guard !entry.bookURL.isEmpty, !entry.chapterURL.isEmpty, !entry.content.isEmpty else {
             throw ChapterContentCacheError.invalidEntry
         }
@@ -87,34 +92,63 @@ public actor ChapterContentCache {
         guard data.count <= Self.maximumEntryBytes else {
             throw ChapterContentCacheError.entryTooLarge(Self.maximumEntryBytes)
         }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try data.write(to: fileURL(bookURL: entry.bookURL, chapterURL: entry.chapterURL), options: .atomic)
-        try pruneIfNeeded()
+        let saved = fileURL(bookURL: entry.bookURL, chapterURL: entry.chapterURL, downloaded: true)
+        let keepsDownload = downloaded || FileManager.default.fileExists(atPath: saved.path)
+        let target = keepsDownload ? saved : fileURL(bookURL: entry.bookURL, chapterURL: entry.chapterURL)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: target, options: .atomic)
+        if keepsDownload {
+            let temporary = fileURL(bookURL: entry.bookURL, chapterURL: entry.chapterURL)
+            if FileManager.default.fileExists(atPath: temporary.path) { try FileManager.default.removeItem(at: temporary) }
+        } else { try pruneIfNeeded() }
     }
 
-    public func remove(bookURL: String) throws {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+    public func remove(bookURL: String, includingDownloads: Bool = true) throws {
         let prefix = digest(bookURL) + "-"
-        for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            where url.lastPathComponent.hasPrefix(prefix) {
-            try FileManager.default.removeItem(at: url)
+        for folder in (includingDownloads ? [directory, downloadsDirectory] : [directory]) where FileManager.default.fileExists(atPath: folder.path) {
+            for url in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+                where url.lastPathComponent.hasPrefix(prefix) {
+                try FileManager.default.removeItem(at: url)
+            }
         }
     }
 
     public func remove(bookURL: String, chapterURL: String) throws {
-        let url = fileURL(bookURL: bookURL, chapterURL: chapterURL)
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        try FileManager.default.removeItem(at: url)
+        for downloaded in [false, true] {
+            let url = fileURL(bookURL: bookURL, chapterURL: chapterURL, downloaded: downloaded)
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        }
     }
 
     public func removeAll() throws {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return }
-        try FileManager.default.removeItem(at: directory)
+        for folder in [directory, downloadsDirectory] where FileManager.default.fileExists(atPath: folder.path) {
+            try FileManager.default.removeItem(at: folder)
+        }
     }
 
     public func statistics() throws -> (entries: Int, bytes: Int) {
-        let files = try cacheFiles()
+        let files = try cacheFiles() + cacheFiles(in: downloadsDirectory)
         return (files.count, files.reduce(0) { $0 + $1.size })
+    }
+
+    public func downloadedStatistics() throws -> (entries: Int, bytes: Int) {
+        let files = try cacheFiles(in: downloadsDirectory)
+        return (files.count, files.reduce(0) { $0 + $1.size })
+    }
+
+    public func cachedChapterURLs(bookURL: String, sourceID: String? = nil, downloadedOnly: Bool = false) throws -> Set<String> {
+        let prefix = digest(bookURL) + "-"
+        var chapters = Set<String>()
+        for folder in (downloadedOnly ? [downloadsDirectory] : [directory, downloadsDirectory]) where FileManager.default.fileExists(atPath: folder.path) {
+            for url in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+                where url.lastPathComponent.hasPrefix(prefix) && url.pathExtension == "json" {
+                guard let entry = try? JSONDecoder().decode(CachedChapterContent.self, from: Data(contentsOf: url)),
+                      entry.bookURL == bookURL, !entry.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                      sourceID == nil || entry.sourceID == nil || entry.sourceID == sourceID else { continue }
+                chapters.insert(entry.chapterURL)
+            }
+        }
+        return chapters
     }
 
     public func pruneIfNeeded() throws {
@@ -128,10 +162,11 @@ public actor ChapterContentCache {
         }
     }
 
-    private func cacheFiles() throws -> [(url: URL, size: Int, modified: Date)] {
-        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+    private func cacheFiles(in folder: URL? = nil) throws -> [(url: URL, size: Int, modified: Date)] {
+        let folder = folder ?? directory
+        guard FileManager.default.fileExists(atPath: folder.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(
-            at: directory,
+            at: folder,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ).compactMap { url in
@@ -141,8 +176,8 @@ public actor ChapterContentCache {
         }
     }
 
-    private func fileURL(bookURL: String, chapterURL: String) -> URL {
-        directory.appendingPathComponent("\(digest(bookURL))-\(digest(chapterURL)).json")
+    private func fileURL(bookURL: String, chapterURL: String, downloaded: Bool = false) -> URL {
+        (downloaded ? downloadsDirectory : directory).appendingPathComponent("\(digest(bookURL))-\(digest(chapterURL)).json")
     }
 
     private func digest(_ value: String) -> String {
@@ -305,6 +340,6 @@ public actor ChapterContentCoordinator {
         for key in inFlight.keys.filter({ $0.bookURL == bookURL }) {
             inFlight.removeValue(forKey: key)?.task.cancel()
         }
-        try? await cache.remove(bookURL: bookURL)
+        try? await cache.remove(bookURL: bookURL, includingDownloads: false)
     }
 }

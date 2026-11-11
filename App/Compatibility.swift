@@ -409,6 +409,15 @@ extension View {
     }
 
     @ViewBuilder
+    func readingFormPresentation() -> some View {
+        if #available(iOS 18.0, *), !ReadingCompatibility.usesLegacyUI {
+            presentationSizing(.page).presentationDetents([.large])
+        } else {
+            readingPresentationDetents([.large])
+        }
+    }
+
+    @ViewBuilder
     func readingPresentationDragIndicator() -> some View {
         if #available(iOS 16.0, *), !ReadingCompatibility.usesLegacyUI {
             presentationDragIndicator(.visible)

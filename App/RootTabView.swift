@@ -5,6 +5,7 @@ struct RootTabView: View {
     @EnvironmentObject private var sourceLibrary: SourceLibraryModel
     private enum Tab: Hashable { case bookshelf, explore, statistics, my }
     @State private var selection: Tab
+    @State private var readerRequiresDark = false
     @State private var showsDemoReader = false
     @State private var didOpenDemoReader = false
     @State private var sourceImportIsPresented = false
@@ -91,7 +92,7 @@ struct RootTabView: View {
                 } else if ProcessInfo.processInfo.arguments.contains("-uiDemoFiles") {
                     FileManagementView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uiDemoOtherSettings") {
-                    OtherSettingsView()
+                    StartupSettingsView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uiDemoAbout") {
                     AboutView()
                 } else if ProcessInfo.processInfo.arguments.contains("-uiDemoLogs") {
@@ -104,7 +105,10 @@ struct RootTabView: View {
                 .tag(Tab.my)
         }
         .readingTabBarBackground()
-        .preferredColorScheme(themeMode == "2" ? .dark : (themeMode == "1" || themeMode == "3" ? .light : nil))
+        .onPreferenceChange(ReaderDarkAppearanceKey.self) { value in
+            Task { @MainActor in readerRequiresDark = value }
+        }
+        .preferredColorScheme(readerRequiresDark || themeMode == "2" ? .dark : (themeMode == "1" || themeMode == "3" ? .light : nil))
         .transaction { transaction in
             if themeMode == "3" { transaction.animation = nil }
         }
@@ -173,7 +177,7 @@ private struct BookshelfView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                ReadingPageHeader(title: "书架", subtitle: "阅读，让时间有了形状") {
+                ReadingPageHeader(title: "书架") {
                     NavigationLink { SearchView() } label: {
                         ReadingToolbarIcon(systemName: "magnifyingglass")
                     }
@@ -221,7 +225,7 @@ private struct BookshelfView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.bottom, 32)
             }
         }
@@ -341,7 +345,7 @@ private struct BookshelfView: View {
                         .accessibilityAddTraits(selectedGroupID == group.id ? .isSelected : [])
                 }
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, 20)
         }
         .overlay(alignment: .bottom) {
             Rectangle().fill(ReadingTheme.separator).frame(height: 0.5)
@@ -474,7 +478,7 @@ private struct ContinueReadingCard: View {
                 Text(BookReadingPresentation.position(book))
                     .font(.caption).foregroundStyle(.secondary)
                     .lineLimit(2)
-                    .padding(.top, 20)
+                    .padding(.top, 12)
                 if book.totalChapterNum > 0 {
                     HStack(spacing: 10) {
                         ReadingProgressLine(value: BookReadingPresentation.progress(book))
@@ -490,17 +494,17 @@ private struct ContinueReadingCard: View {
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(ReadingTheme.onAccent)
-                .padding(.horizontal, 18)
-                .frame(minHeight: 40)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 32)
                 .background(ReadingTheme.accentFill, in: Capsule())
-                .padding(.top, 20)
+                .padding(.top, 12)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if !dynamicTypeSize.isAccessibilitySize {
-                BookCoverArtwork(title: book.name, author: book.author, remoteURL: book.coverUrl, width: 94, height: 140)
+                BookCoverArtwork(title: book.name, author: book.author, remoteURL: book.coverUrl, width: 80, height: 116)
             }
         }
-        .padding(20)
+        .padding(16)
         .background(ReadingTheme.groupedCanvas, in: RoundedRectangle(cornerRadius: 20))
     }
 }
@@ -1267,17 +1271,15 @@ private struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     profileHeader(topInset: geometry.safeAreaInsets.top)
                     VStack(alignment: .leading, spacing: 24) {
-                        appCard
+                        settingSection("我的阅读") {
+                            settingLink("阅读记录", icon: "clock") { ReadingHistoryView() }
+                            settingLink("书签", icon: "bookmark", showsSeparator: false) { AllBookmarksView() }
+                        }
                         readingSection
                         rulesSection
-                        settingSection("文件与存储") {
-                            settingLink("文件管理", icon: "folder", showsSeparator: false) {
-                                FileManagementView()
-                            }
-                        }
-                        supportSection
+                        applicationSection
                     }
-                    .padding(.horizontal, 28)
+                    .padding(.horizontal, 20)
                     .padding(.bottom, 32)
                 }
                 .background(alignment: .top) {
@@ -1312,117 +1314,59 @@ private struct SettingsView: View {
     private func profileHeader(topInset: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("我的")
-                .font(.largeTitle.bold())
+                .font(.title2.weight(.semibold))
+                .accessibilityIdentifier("page.header.我的")
                 .foregroundStyle(ProfileTheme.ink)
                 .accessibilityAddTraits(.isHeader)
-            Text("按照你的方式阅读")
-                .font(.subheadline)
-                .foregroundStyle(ProfileTheme.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 28)
-        .padding(.top, topInset + 42)
-        .padding(.bottom, 34)
-    }
-
-    private var appCard: some View {
-        NavigationLink {
-            AboutView()
-        } label: {
-            HStack(spacing: 16) {
-                Image("BrandIcon")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 58, height: 58)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(AppIdentity.name)
-                        .font(.headline)
-                        .foregroundStyle(ProfileTheme.ink)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("快速搜书，自由阅读")
-                        .font(.footnote)
-                        .foregroundStyle(ProfileTheme.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(ProfileTheme.ink.opacity(0.75))
-                    .frame(width: 26, height: 26)
-                    .background(ProfileTheme.detail.opacity(0.10), in: Circle())
-                    .accessibilityHidden(true)
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 86, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(LinearGradient(
-                        colors: [ProfileTheme.surface, ProfileTheme.appCardTint],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    ))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(ProfileTheme.surface.opacity(0.9), lineWidth: 0.75)
-            }
-            .shadow(color: .black.opacity(0.035), radius: 18, x: 0, y: 8)
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("查看关于与版本信息")
-        .accessibilityIdentifier("profile.about")
+        .padding(.horizontal, 20)
+        .padding(.top, topInset + 20)
+        .padding(.bottom, 20)
     }
 
     private var readingSection: some View {
-        settingSection("阅读") {
+        settingSection("阅读偏好") {
             settingLink("阅读设置", icon: "textformat.size") { ReadingPreferencesView() }
+            settingLink("朗读设置", icon: "waveform", showsSeparator: false) { SpeechSettingsView() }
+        }
+    }
+
+    private var applicationSection: some View {
+        settingSection("应用与数据") {
             Menu {
-                Picker("外观", selection: $themeMode) {
+                Picker("应用外观", selection: $themeMode) {
                     Text("跟随系统").tag("0")
                     Text("浅色").tag("1")
                     Text("深色").tag("2")
                     Text("E-Ink 模式").tag("3")
                 }
             } label: {
-                settingRow("外观", icon: "circle.lefthalf.filled", value: appearanceTitle, showsValuePill: true)
+                settingRow("应用外观", icon: "circle.lefthalf.filled", value: appearanceTitle, showsValuePill: true)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("外观")
+            .accessibilityLabel("应用外观")
             .accessibilityValue(appearanceTitle)
             .accessibilityIdentifier("profile.appearance")
-            settingLink("在线朗读", icon: "waveform") { HttpTTSManagementView() }
-            settingLink("书签", icon: "bookmark") { AllBookmarksView() }
-            settingLink("阅读记录", icon: "clock", showsSeparator: false) {
-                ReadingHistoryView()
-            }
+            settingLink("启动与书架", icon: "gearshape") { StartupSettingsView() }
+            settingLink("同步", icon: "icloud") { SyncSettingsView() }
+            settingLink("文件管理", icon: "folder") { FileManagementView() }
+            settingLink("存储空间", icon: "internaldrive") { CacheManagementView() }
+            settingLink("网络设置", icon: "network") { NetworkSettingsView() }
+            settingLink("帮助与诊断", icon: "stethoscope") { DiagnosticsSettingsView() }
+            settingLink("关于", icon: "info.circle", showsSeparator: false) { AboutView() }
         }
     }
 
     private var rulesSection: some View {
-        settingSection("书源与规则") {
+        settingSection("内容与来源") {
             settingLink("书源管理", icon: "globe") { SourceManagementView() }
+            settingLink("朗读服务", icon: "headphones") { HttpTTSManagementView() }
             settingLink("规则订阅", icon: "link") { RuleSubscriptionView() }
             settingLink("替换净化", icon: "text.badge.checkmark") { ReplaceRuleManagementView() }
             settingLink("TXT 目录规则", icon: "list.bullet.rectangle", showsSeparator: false) {
                 TxtTocRuleManagementView()
             }
-        }
-    }
-
-    private var supportSection: some View {
-        settingSection("项目与支持") {
-            Link(destination: AppIdentity.authorURL) {
-                settingRow("开发者 Aminark", icon: "person.crop.circle", isExternal: true)
-            }
-            .buttonStyle(.plain)
-            Link(destination: AppIdentity.projectURL) {
-                settingRow("GitHub 项目", icon: "chevron.left.forwardslash.chevron.right", isExternal: true)
-            }
-            .buttonStyle(.plain)
-            settingLink("其他设置", icon: "gearshape") { OtherSettingsView() }
-            settingLink("关于", icon: "info.circle", showsSeparator: false) { AboutView() }
         }
     }
 
@@ -1515,25 +1459,13 @@ private struct SettingsView: View {
 }
 
 private enum ProfileTheme {
-    static let canvas = adaptive(0xF8F8F7, dark: 0x141416)
-    static let surface = adaptive(0xFFFFFF, dark: 0x232326)
-    static let appCardTint = adaptive(0xFBF3EC, dark: 0x302923)
-    static let ink = adaptive(0x171817, dark: 0xF3F0EC)
-    static let secondary = adaptive(0x898A8C, dark: 0xA5A2A0)
-    static let detail = adaptive(0xBA916B, dark: 0xD1AB84)
-    static let separator = adaptive(0xEAEAEA, dark: 0x373638)
-
-    private static func adaptive(_ light: UInt32, dark: UInt32) -> Color {
-        Color(uiColor: UIColor { traits in
-            let hex = traits.userInterfaceStyle == .dark ? dark : light
-            return UIColor(
-                red: CGFloat((hex >> 16) & 0xff) / 255,
-                green: CGFloat((hex >> 8) & 0xff) / 255,
-                blue: CGFloat(hex & 0xff) / 255,
-                alpha: 1
-            )
-        })
-    }
+    static let canvas = ReadingTheme.canvas
+    static let surface = ReadingTheme.surface
+    static let appCardTint = ReadingTheme.groupedCanvas
+    static let ink = ReadingTheme.ink
+    static let secondary = Color.secondary
+    static let detail = ReadingTheme.accent
+    static let separator = ReadingTheme.separator
 }
 
 private struct ProfileSettingIcon: View {

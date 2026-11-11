@@ -11,17 +11,12 @@ final class BookDetailViewModel: ObservableObject {
     @Published private(set) var book: Book
     @Published private(set) var chapters: [BookChapter] = []
     @Published private(set) var diagnostics: [RuleDiagnostic] = []
-    @Published private(set) var isCaching = false
-    @Published private(set) var cacheCompleted = 0
-    @Published private(set) var cacheTotal = 0
 
     @Published private(set) var source: BookSource
     private var searchBook: SearchBook?
     private let service: NetworkBookService
     private let updateCoordinator: BookUpdateCoordinator
-    private let contentCoordinator: ChapterContentCoordinator
     private let sourceSwitchService: BookSourceSwitchService
-    private var cacheTask: Task<Void, Never>?
 
     init(
         searchBook: SearchBook,
@@ -34,7 +29,6 @@ final class BookDetailViewModel: ObservableObject {
         self.service = service
         let chapters = chapterRepository
         updateCoordinator = BookUpdateCoordinator(repository: chapters, loader: service)
-        contentCoordinator = ChapterContentCoordinator(loader: service)
         sourceSwitchService = BookSourceSwitchService(
             detailLoader: service,
             chapterLoader: service,
@@ -61,7 +55,6 @@ final class BookDetailViewModel: ObservableObject {
         self.service = service
         let chapters = AppBookChapterRepository.live()
         updateCoordinator = BookUpdateCoordinator(repository: chapters, loader: service)
-        contentCoordinator = ChapterContentCoordinator(loader: service)
         sourceSwitchService = BookSourceSwitchService(
             detailLoader: service,
             chapterLoader: service,
@@ -76,13 +69,9 @@ final class BookDetailViewModel: ObservableObject {
         self.source = source
         service = .init()
         updateCoordinator = .init()
-        contentCoordinator = .init()
         sourceSwitchService = .init()
         self.chapters = chapters
         state = .ready
-        isCaching = true
-        cacheCompleted = 2
-        cacheTotal = chapters.filter { !$0.isVolume }.count
     }
 
     func load(sources: [BookSource] = []) async {
@@ -130,18 +119,7 @@ final class BookDetailViewModel: ObservableObject {
         }
     }
 
-    func cacheNextTen() { startCaching(limit: 10) }
-
-    func cacheRemaining() { startCaching(limit: nil) }
-
-    func cancelCaching() {
-        cacheTask?.cancel()
-        cacheTask = nil
-        isCaching = false
-    }
-
     func applySourceSwitch(_ report: BookSourceSwitchReport, source: BookSource) {
-        cancelCaching()
         searchBook = nil
         book = report.book
         chapters = report.chapters
@@ -203,55 +181,10 @@ final class BookDetailViewModel: ObservableObject {
     }
 
     func refresh(sources: [BookSource] = []) async {
-        cancelCaching()
         chapters = []
         diagnostics = []
         state = .idle
         await load(sources: sources)
     }
 
-    private func startCaching(limit: Int?) {
-        cancelCaching()
-        let start = min(max(book.durChapterIndex, 0), max(chapters.count - 1, 0))
-        let jobs = ChapterCachePlanner.plan(chapters: chapters, startIndex: start, limit: limit)
-        guard !jobs.isEmpty else { return }
-
-        isCaching = true
-        cacheCompleted = 0
-        cacheTotal = jobs.count
-        let coordinator = contentCoordinator
-        let currentBook = book
-        let currentSource = source
-        cacheTask = Task { [weak self] in
-            await withTaskGroup(of: Bool.self) { group in
-                var next = 0
-                func enqueue() {
-                    guard next < jobs.count else { return }
-                    let job = jobs[next]
-                    next += 1
-                    group.addTask {
-                        guard !Task.isCancelled else { return false }
-                        return await coordinator.prefetch(
-                            book: currentBook,
-                            chapter: job.chapter,
-                            source: currentSource,
-                            nextChapterURL: job.nextChapterURL
-                        )
-                    }
-                }
-                for _ in 0..<min(3, jobs.count) { enqueue() }
-                while await group.next() != nil {
-                    guard !Task.isCancelled else {
-                        group.cancelAll()
-                        break
-                    }
-                    self?.cacheCompleted += 1
-                    enqueue()
-                }
-            }
-            guard !Task.isCancelled else { return }
-            self?.isCaching = false
-            self?.cacheTask = nil
-        }
-    }
 }

@@ -3,6 +3,46 @@ import Testing
 @testable import LegadoCore
 
 struct ChapterContentCacheTests {
+    @Test func explicitDownloadsSurviveEvictionAndAreReadableAfterRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = ChapterContentCache(directory: root, maximumTotalBytes: 8 * 1024 * 1024)
+        let body = String(repeating: "a", count: 3 * 1024 * 1024)
+        try await cache.save(.init(bookURL: "book", chapterURL: "offline", content: "离线正文", sourceID: "source"), downloaded: true)
+        for index in 0..<3 { try await cache.save(.init(bookURL: "book", chapterURL: "temp-\(index)", content: body)) }
+        let reopened = ChapterContentCache(directory: root)
+        let urls = try await reopened.cachedChapterURLs(bookURL: "book", sourceID: "source")
+        #expect(urls.contains("offline"))
+        #expect(urls.count == 3)
+        #expect(try await reopened.downloadedStatistics().entries == 1)
+        let loader = StubChapterLoader(content: "不应联网")
+        let coordinator = ChapterContentCoordinator(loader: loader, cache: reopened)
+        let result = await coordinator.load(book: .init(bookUrl: "book", name: "书", origin: "source"),
+            chapter: .init(url: "offline", title: "章", bookUrl: "book", index: 0),
+            source: .init(bookSourceUrl: "source", bookSourceName: "源"))
+        #expect(result.loadedFromCache && result.report.content == "离线正文")
+        #expect(await loader.calls() == 0)
+        await coordinator.invalidate(bookURL: "book")
+        #expect(try await reopened.cachedChapterURLs(bookURL: "book") == ["offline"])
+        if let path = ProcessInfo.processInfo.environment["LEGADO_LIVE_DOWNLOADED_DIR"] {
+            let folder = URL(fileURLWithPath: path)
+            let files = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
+            #expect(!files.isEmpty)
+            let realLoader = StubChapterLoader(content: "不应联网")
+            let offline = ChapterContentCoordinator(loader: realLoader, cache: .init(directory: root.appendingPathComponent("offline-test"), downloadsDirectory: folder))
+            for file in files.prefix(3) {
+                let entry = try JSONDecoder().decode(CachedChapterContent.self, from: Data(contentsOf: file))
+                let book = Book(bookUrl: entry.bookURL, name: "家父汉高祖", origin: entry.sourceID ?? "source")
+                let chapter = BookChapter(url: entry.chapterURL, title: entry.title ?? "章", bookUrl: book.bookUrl, index: 0)
+                let read = await offline.load(book: book, chapter: chapter, source: .init(bookSourceUrl: book.origin, bookSourceName: "真实书源"))
+                #expect(read.loadedFromCache && read.report.content == entry.content)
+            }
+            #expect(await realLoader.calls() == 0)
+            print("[OfflineBook] \(files.count) real downloaded chapters; cached reads made zero network calls")
+        }
+
+    }
+
     @Test func foregroundSharesAnInFlightPreloadEvenWhenItsWindowIsCancelled() async throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

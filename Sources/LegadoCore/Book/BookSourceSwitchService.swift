@@ -70,6 +70,11 @@ public struct AvailableBookSource: Sendable {
     }
 }
 
+public enum BookSourceCandidateValidation: Sendable {
+    case checking(BookSourceCandidate)
+    case checked(BookSourceCandidate, BookSourceSwitchReport?)
+}
+
 public struct BookSourceProgressMapper: Sendable {
     public init() {}
 
@@ -116,7 +121,7 @@ public struct BookSourceProgressMapper: Sendable {
     private func normalize(_ value: String) -> String {
         String(value.unicodeScalars.filter {
             !CharacterSet.whitespacesAndNewlines.contains($0) && !CharacterSet.punctuationCharacters.contains($0)
-        }).lowercased()
+        }).lowercased().replacingOccurrences(of: #"^第0+(?=\d)"#, with: "第", options: .regularExpression)
     }
 }
 
@@ -164,7 +169,8 @@ public actor BookSourceSwitchService {
         guard !eligible.isEmpty else { return AsyncStream { $0.finish() } }
         let eligibleIDs = Set(eligible.map(\.id))
         let searcher = self.searcher
-        return AsyncStream { continuation in
+        // Updates are cumulative; a slow validator only needs the latest search snapshot.
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
                 var found: [String: SearchBook] = [:]
                 for await outcome in searcher.searchStream(keyword: book.name, sources: eligible) {
@@ -198,11 +204,44 @@ public actor BookSourceSwitchService {
         }
     }
 
+    public func validatedCandidateUpdates(for book: Book, sources: [BookSource]) -> AsyncStream<BookSourceCandidateValidation> {
+        AsyncStream { continuation in
+            let task = Task {
+                await withTaskGroup(of: Void.self) { group in
+                    var checked = Set<String>()
+                    var running = 0
+                    for await candidates in self.candidateUpdates(for: book, sources: sources) {
+                        for candidate in candidates where checked.insert(candidate.id).inserted {
+                            guard !Task.isCancelled else { group.cancelAll(); return }
+                            continuation.yield(.checking(candidate))
+                            if running == 3 { await group.next(); running -= 1 }
+                            guard !Task.isCancelled else { group.cancelAll(); return }
+                            group.addTask {
+                                guard let source = sources.first(where: { $0.id == candidate.book.origin }) else { return }
+                                let report = await self.prepareSwitch(current: book, candidate: candidate.book, source: source, persistsDirectory: false)
+                                if !Task.isCancelled { continuation.yield(.checked(candidate, report)) }
+                            }
+                            running += 1
+                        }
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func saveDirectory(for report: BookSourceSwitchReport) async throws {
+        try Task.checkCancellation()
+        try await chapterRepository.save(report.chapters, bookURL: report.book.bookUrl)
+    }
+
     public func prepareSwitch(
         current: Book,
         candidate: SearchBook,
         source: BookSource,
-        now: Int64? = nil
+        now: Int64? = nil,
+        persistsDirectory: Bool = true
     ) async -> BookSourceSwitchReport? {
         guard !Task.isCancelled else { return nil }
         let detail = await detailLoader.loadDetail(searchBook: candidate, source: source)
@@ -238,7 +277,7 @@ public actor BookSourceSwitchService {
         result.verifiedContent = content
         result.diagnostics += content.diagnostics
         do {
-            try await chapterRepository.save(result.chapters, bookURL: result.book.bookUrl)
+            if persistsDirectory { try await saveDirectory(for: result) }
         } catch {
             result.diagnostics.append(.init(
                 severity: .error,
@@ -280,6 +319,6 @@ public actor BookSourceSwitchService {
     }
 
     private nonisolated static func normalizeAuthor(_ value: String) -> String {
-        normalize(value.replacingOccurrences(of: "作者", with: "").replacingOccurrences(of: "著", with: ""))
+        normalize(value).replacingOccurrences(of: "作者", with: "").replacingOccurrences(of: "著", with: "")
     }
 }

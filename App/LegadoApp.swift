@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct LegadoApp: App {
+    @Environment(\.scenePhase) private var scenePhase
     @UIApplicationDelegateAdaptor(LegadoAppDelegate.self) private var appDelegate
     @StateObject private var sourceLibrary: SourceLibraryModel
     @StateObject private var bookLibrary: BookLibraryModel
@@ -9,6 +10,8 @@ struct LegadoApp: App {
     @StateObject private var readingActivity: ReadingActivityModel
     @StateObject private var rssLibrary: RSSLibraryModel
     @StateObject private var ruleSubscriptions: RuleSubscriptionModel
+    @StateObject private var ttsLibrary = HttpTTSLibraryModel()
+    @State private var pendingTTSImport: HttpTTSImportRequest?
 
     init() {
         AppDiagnostics.shared.start()
@@ -54,13 +57,51 @@ struct LegadoApp: App {
                     await readingActivity.load()
                     await rssLibrary.load()
                     await ruleSubscriptions.load()
+                    if !ProcessInfo.processInfo.arguments.contains("-uiDemo") {
+                        await ICloudSyncModel.shared.attach(bookLibrary, sources: sourceLibrary, rules: replaceRuleLibrary,
+                            rss: rssLibrary, subscriptions: ruleSubscriptions, activity: readingActivity)
+                    }
                     if UserDefaults.standard.bool(forKey: "auto_refresh") {
                         await bookLibrary.checkForUpdates(sources: sourceLibrary.sources, onlyRead: UserDefaults.standard.bool(forKey: "onlyUpdateRead"))
                     }
                     await ruleSubscriptions.checkAutomaticUpdates(bookSources: sourceLibrary, rssSources: rssLibrary, replaceRules: replaceRuleLibrary)
                 }
+                .onReceive(bookLibrary.$books.receive(on: RunLoop.main)) { _ in ICloudSyncModel.shared.localStateChanged() }
+                .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in
+                    ICloudSyncModel.shared.localStateChanged()
+                }
+                .onReceive(sourceLibrary.$sources) { _ in Task { await ICloudSyncModel.shared.refreshConfiguration() } }
+                .onReceive(replaceRuleLibrary.$rules) { _ in Task { await ICloudSyncModel.shared.refreshConfiguration() } }
+                .onReceive(rssLibrary.$sources) { _ in Task { await ICloudSyncModel.shared.refreshConfiguration() } }
+                .onReceive(ruleSubscriptions.$values) { _ in Task { await ICloudSyncModel.shared.refreshConfiguration() } }
+                .onReceive(readingActivity.$bookmarks) { _ in Task { await ICloudSyncModel.shared.refreshConfiguration() } }
+                .onReceive(readingActivity.$readRecords) { _ in Task { await ICloudSyncModel.shared.refreshConfiguration() } }
+                .onReceive(bookLibrary.$groups) { _ in ICloudSyncModel.shared.localStateChanged() }
+                .onReceive(NotificationCenter.default.publisher(for: .legadoConfigurationChanged).receive(on: RunLoop.main)) { _ in
+                    Task { await ICloudSyncModel.shared.refreshConfiguration() }
+                }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active { Task {
+                        await ICloudSyncModel.shared.refreshConfiguration()
+                        await ICloudSyncModel.shared.synchronize()
+                    } }
+                }
                 .onOpenURL { url in
                     Task {
+                        if url.scheme?.lowercased() == "legado", url.host?.lowercased() == "import",
+                           url.path.lowercased() == "/httptts" {
+                            pendingTTSImport = .init(input: url.absoluteString)
+                            return
+                        }
+                        if url.isFileURL, url.pathExtension.lowercased() == "json" {
+                            let accessing = url.startAccessingSecurityScopedResource()
+                            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                            if let data = try? Data(contentsOf: url), (try? HttpTTS.decodeImport(data)) != nil,
+                               let text = String(data: data, encoding: .utf8) {
+                                pendingTTSImport = .init(input: text)
+                                return
+                            }
+                        }
                         if url.isFileURL && url.pathExtension.lowercased() == "epub" {
                             let file = LocalBookImportFile(url: url)
                             await bookLibrary.load()
@@ -80,6 +121,9 @@ struct LegadoApp: App {
                             }
                         } else { await sourceLibrary.handleDeepLink(url) }
                     }
+                }
+                .sheet(item: $pendingTTSImport) { request in
+                    HttpTTSImportView(input: request.input, library: ttsLibrary).readingFormPresentation()
                 }
         }
     }

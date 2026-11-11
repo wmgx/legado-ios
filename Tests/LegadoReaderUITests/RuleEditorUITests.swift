@@ -248,8 +248,8 @@ final class RuleEditorUITests: XCTestCase {
         if usesLegacyUI { app.launchArguments.append("-uiLegacyCompatibility") }
         app.launch()
         XCTAssertTrue(app.navigationBars["书源"].waitForExistence(timeout: 20))
-        app.buttons["更多"].firstMatch.tap()
-        app.buttons["新建书源"].tap()
+        app.buttons["添加书源"].firstMatch.tap()
+        app.buttons["手动编辑规则"].tap()
         XCTAssertTrue(app.navigationBars["新建书源"].waitForExistence(timeout: 10))
         let name = usesLegacyUI ? app.textViews["书源名称"] : app.textFields["source.field.bookSourceName"]
         XCTAssertTrue(name.waitForExistence(timeout: 5))
@@ -268,6 +268,14 @@ final class RuleEditorUITests: XCTestCase {
         app.buttons["保存"].tap()
         if app.alerts.firstMatch.waitForExistence(timeout: 5) { app.alerts.buttons["好"].tap() }
         XCTAssertTrue(app.staticTexts["UI Source"].waitForExistence(timeout: 10))
+        app.buttons["选择"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "UI Source")).firstMatch.tap()
+        attach(app, name: "Source selection actions")
+        app.buttons["删除"].tap()
+        XCTAssertTrue(app.alerts["删除所选书源？"].waitForExistence(timeout: 5))
+        app.alerts.buttons["删除 1 个书源"].tap()
+        if app.alerts.firstMatch.waitForExistence(timeout: 5), app.alerts.buttons["好"].exists { app.alerts.buttons["好"].tap() }
+        XCTAssertFalse(app.staticTexts["UI Source"].exists)
     }
 
     func testPurificationDraftRunsThroughReaderPipeline() throws {

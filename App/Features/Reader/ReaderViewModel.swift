@@ -16,6 +16,16 @@ struct ReaderScrollChapter: Identifiable, Equatable {
 }
 
 enum ReaderPositionResolver {
+    static func chapterPosition(fraction: Double, text: String, pageRanges: [NSRange]) -> Int {
+        let source = text as NSString
+        guard source.length > 0 else { return 0 }
+        let fraction = fraction.isFinite ? min(max(fraction, 0), 1) : 0
+        let proposed: Int
+        if pageRanges.isEmpty { proposed = Int((fraction * Double(source.length - 1)).rounded()) }
+        else { proposed = pageRanges[Int((fraction * Double(pageRanges.count - 1)).rounded())].location }
+        return source.rangeOfComposedCharacterSequence(at: min(max(proposed, 0), source.length - 1)).location
+    }
+
     static func renderedLocation(position: Int, prefixLength: Int, renderedLength: Int) -> Int {
         let lastLocation = max(renderedLength, 1) - 1
         let prefix = min(max(prefixLength, 0), lastLocation)
@@ -60,7 +70,7 @@ final class ReaderViewModel: ObservableObject {
     private var previousLoadedIndex: Int?
     private var continuationLoadedIndex: Int?
     private var previousChapterError: String?
-    private var continuationChapterError: String?
+    private(set) var continuationChapterError: String?
     @Published private(set) var scrollRetries: Set<Int> = []
     private var sourceCacheNeedsInvalidation = false
     private var pendingSourceContent: ChapterContentReport?
@@ -223,6 +233,10 @@ final class ReaderViewModel: ObservableObject {
     var nextChapter: BookChapter? { nextReadableChapter(after: currentIndex) }
     var canGoPrevious: Bool { navigationIndex(direction: -1) != nil }
     var canGoNext: Bool { navigationIndex(direction: 1) != nil }
+    var hasChapterAfterContinuation: Bool {
+        guard let index = navigationIndex(direction: 1) else { return false }
+        return readableIndex(from: index, direction: 1) != nil
+    }
     var hasPreviousWindow: Bool { previousLoadedIndex != nil }
     var hasContinuationWindow: Bool { continuationLoadedIndex != nil }
     var canEditContent: Bool { source != nil }

@@ -60,6 +60,12 @@ final class RSSLibraryModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func applySyncedSources(_ values: [RssSource]) async throws {
+        let decoded = try importer.decode(JSONEncoder().encode(values)).sources
+        let sorted = decoded.sorted { $0.customOrder == $1.customOrder ? $0.id < $1.id : $0.customOrder < $1.customOrder }
+        if sorted != sources { try await sourceRepository.save(sorted); sources = sorted }
+    }
+
     func importFiles(_ urls: [URL]) async {
         await perform {
             var merged = self.sources

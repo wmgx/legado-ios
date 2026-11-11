@@ -5,6 +5,8 @@ struct BookDetailView: View {
     @EnvironmentObject private var sourceLibrary: SourceLibraryModel
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var model: BookDetailViewModel
+    @ObservedObject private var downloads = BookDownloadModel.shared
+    @State private var showsDownload = false
     @State private var showsSourceSwitch = false
     @State private var showsRemoveConfirmation = false
     @State private var showsTableOfContents = false
@@ -34,7 +36,9 @@ struct BookDetailView: View {
                     Divider()
                 }
                 chapterCard
-                if model.isCaching || model.cacheCompleted > 0 { cacheProgressCard }
+                if downloads.progress[model.book.bookUrl] != nil {
+                    ReadingCard { BookDownloadProgressView(bookURL: model.book.bookUrl) }
+                }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 30)
@@ -74,14 +78,8 @@ struct BookDetailView: View {
                         Label("分享", systemImage: "square.and.arrow.up")
                     }
                     Divider()
-                    Button("缓存接下来 10 章", systemImage: "arrow.down.circle") { model.cacheNextTen() }
-                        .disabled(model.chapters.isEmpty || model.isCaching)
-                    Button("缓存剩余章节", systemImage: "square.and.arrow.down.on.square") { model.cacheRemaining() }
-                        .disabled(model.chapters.isEmpty || model.isCaching)
-                    if model.isCaching {
-                        Divider()
-                        Button("停止缓存", systemImage: "stop.circle", role: .destructive) { model.cancelCaching() }
-                    }
+                    Button("下载章节", systemImage: "arrow.down.circle") { showsDownload = true }
+                        .disabled(model.chapters.isEmpty)
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -111,10 +109,15 @@ struct BookDetailView: View {
             ReadingNavigationStack {
                 SourceSwitchView(book: model.book, sources: sourceLibrary.sources) { report, source in
                     let oldURL = model.book.bookUrl
+                    downloads.pause(oldURL)
                     model.applySourceSwitch(report, source: source)
                     Task { await library.replace(oldBookURL: oldURL, with: report.book) }
                 }
             }
+        }
+        .sheet(isPresented: $showsDownload) {
+            BookDownloadView(book: model.book, chapters: model.chapters, source: model.source, startIndex: model.book.durChapterIndex)
+                .readingFormPresentation()
         }
         .sheet(isPresented: $showsTableOfContents) {
             BookTableOfContentsView(book: model.book, chapters: model.chapters, source: model.source)
@@ -124,26 +127,6 @@ struct BookDetailView: View {
                 Task { await library.remove(bookURL: model.book.bookUrl) }
             }
             Button("取消", role: .cancel) { }
-        }
-    }
-
-    private var cacheProgressCard: some View {
-        ReadingCard {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label(model.isCaching ? "正在缓存章节" : "章节缓存完成", systemImage: model.isCaching ? "arrow.down.circle.fill" : "checkmark.circle.fill")
-                        .font(.headline)
-                    Spacer()
-                    Text("\(model.cacheCompleted)/\(model.cacheTotal)")
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }
-                ProgressView(value: Double(model.cacheCompleted), total: Double(max(model.cacheTotal, 1)))
-                    .tint(ReadingTheme.accent)
-                if model.isCaching {
-                    Button("停止缓存", role: .destructive) { model.cancelCaching() }
-                        .font(.subheadline)
-                }
-            }
         }
     }
 
@@ -295,21 +278,41 @@ struct BookDetailView: View {
 
 private struct BookTableOfContentsView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var library: BookLibraryModel
+    @ObservedObject private var downloads = BookDownloadModel.shared
+    @State private var showsDownload = false
+    @State private var filter = 0
     let book: Book
     let chapters: [BookChapter]
     let source: BookSource
     @State private var searchText = ""
     @State private var descending = false
 
+    private var readTitles: Set<String> {
+        Set(library.books.first(where: { $0.bookUrl == book.bookUrl })?.readConfig?.readChapterTitles ?? book.readConfig?.readChapterTitles ?? [])
+    }
+
     private var displayedChapters: [BookChapter] {
+        let read = readTitles, cached = downloads.cachedURLs[book.bookUrl] ?? []
+        let eligible = chapters.filter {
+            if $0.isVolume { return filter == 0 }
+            switch filter {
+            case 1: return !read.contains($0.title)
+            case 2: return read.contains($0.title)
+            case 3: return cached.contains($0.url)
+            case 4: return !cached.contains($0.url)
+            default: return true
+            }
+        }
         let filtered = searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? chapters
-            : chapters.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
+            ? eligible
+            : eligible.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
         return descending ? Array(filtered.reversed()) : filtered
     }
 
     var body: some View {
-        ReadingNavigationStack {
+        let read = readTitles, cached = downloads.cachedURLs[book.bookUrl] ?? []
+        return ReadingNavigationStack {
             List(displayedChapters) { chapter in
                 if chapter.isVolume {
                     Text(chapter.title).font(.headline).foregroundStyle(ReadingTheme.accent)
@@ -317,25 +320,30 @@ private struct BookTableOfContentsView: View {
                     NavigationLink {
                         ReaderView(book: book, chapters: chapters, initialIndex: chapter.index, source: source)
                     } label: {
-                        HStack(spacing: 12) {
-                            Text("\(chapter.index + 1)")
-                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 42, alignment: .trailing)
-                            Text(chapter.title).lineLimit(2)
-                            Spacer()
-                            if chapter.index == book.durChapterIndex {
-                                Image(systemName: "location.fill").foregroundStyle(ReadingTheme.accent)
-                            }
-                            if chapter.isVip { Image(systemName: "lock.fill").foregroundStyle(.orange) }
-                        }
+                        BookChapterStatusRow(chapter: chapter, isCurrent: chapter.index == book.durChapterIndex,
+                                             isRead: read.contains(chapter.title), isDownloaded: cached.contains(chapter.url))
                     }
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(.init(top: 0, leading: 16, bottom: 0, trailing: 16))
                 }
             }
-            .searchable(text: $searchText, prompt: "搜索目录")
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索章节")
             .navigationTitle("目录")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu("章节筛选", systemImage: "line.3.horizontal.decrease") {
+                        Picker("章节状态", selection: $filter) {
+                            Text("全部章节").tag(0)
+                            Text("未读").tag(1)
+                            Text("已读").tag(2)
+                            Text("已下载").tag(3)
+                            Text("可下载").tag(4)
+                        }
+                    }
+                    Button("下载章节", systemImage: "arrow.down.circle") { showsDownload = true }
+                        .labelStyle(.iconOnly)
                     Button(descending ? "正序" : "倒序", systemImage: "arrow.up.arrow.down") {
                         descending.toggle()
                     }
@@ -352,6 +360,11 @@ private struct BookTableOfContentsView: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
                 .background(.bar)
             }
+        }
+        .task { await downloads.refresh(book: book) }
+        .sheet(isPresented: $showsDownload) {
+            BookDownloadView(book: book, chapters: chapters, source: source, startIndex: book.durChapterIndex)
+                .readingFormPresentation()
         }
     }
 }
